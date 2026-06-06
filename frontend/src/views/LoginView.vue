@@ -9,6 +9,19 @@ const password = ref("Passw0rd!");
 const loading = ref(false);
 const errorText = ref("");
 
+const messageMap = {
+  "Invalid credentials": "账号或密码错误",
+  "Email and password required": "请输入邮箱和密码",
+  "Login failed": "登录失败"
+};
+
+const toChineseMessage = (message, fallback) => {
+  if (!message) {
+    return fallback;
+  }
+  return messageMap[message] || message;
+};
+
 const login = async () => {
   loading.value = true;
   errorText.value = "";
@@ -21,7 +34,7 @@ const login = async () => {
     localStorage.setItem("user", JSON.stringify(data.user));
     router.push("/dashboard");
   } catch (error) {
-    errorText.value = error.response?.data?.message || "Login failed";
+    errorText.value = toChineseMessage(error.response?.data?.message, "登录失败");
   } finally {
     loading.value = false;
   }
@@ -31,12 +44,12 @@ const login = async () => {
 <template>
   <main class="page">
     <section class="card">
-      <h1>Edu Live Login</h1>
-      <p>Use your teacher or student account to continue.</p>
+      <h1>教培直播课堂登录</h1>
+      <p>请使用教师或学员账号登录。</p>
       <form @submit.prevent="login" class="form">
-        <input v-model="email" type="email" placeholder="Email" required />
-        <input v-model="password" type="password" placeholder="Password" required />
-        <button type="submit" :disabled="loading">{{ loading ? "Signing in..." : "Sign in" }}</button>
+        <input v-model="email" type="email" placeholder="邮箱" required />
+        <input v-model="password" type="password" placeholder="密码" required />
+        <button type="submit" :disabled="loading">{{ loading ? "登录中..." : "登录" }}</button>
         <p class="error" v-if="errorText">{{ errorText }}</p>
       </form>
     </section>

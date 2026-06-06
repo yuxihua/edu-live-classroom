@@ -18,6 +18,21 @@ const replayForm = ref({
 const user = JSON.parse(localStorage.getItem("user") || "{}");
 const canManageReplay = ["admin", "teacher"].includes(user.role);
 
+const messageMap = {
+  "Failed to load classroom": "加载课堂失败",
+  "Failed to add replay": "添加回放失败",
+  "No permission to view replays": "没有权限查看回放",
+  "Student must enroll before viewing replays": "学员需先报名才能查看回放",
+  "Meeting URL not configured": "未配置直播链接"
+};
+
+const toChineseMessage = (message, fallback) => {
+  if (!message) {
+    return fallback;
+  }
+  return messageMap[message] || message;
+};
+
 const courseId = computed(() => Number(route.params.id));
 
 const fetchCourse = async () => {
@@ -29,7 +44,7 @@ const fetchCourse = async () => {
       joinUrl.value = linkData.data.joinUrl;
     }
   } catch (error) {
-    errorText.value = "Failed to load classroom";
+    errorText.value = toChineseMessage(error.response?.data?.message, "加载课堂失败");
   }
 };
 
@@ -67,7 +82,7 @@ const addReplay = async () => {
     };
     await fetchReplays();
   } catch (error) {
-    errorText.value = error.response?.data?.message || "Failed to add replay";
+    errorText.value = toChineseMessage(error.response?.data?.message, "添加回放失败");
   } finally {
     addingReplay.value = false;
   }
@@ -82,32 +97,32 @@ onMounted(async () => {
 
 <template>
   <main class="room">
-    <h1>Classroom</h1>
+    <h1>课堂</h1>
     <p v-if="errorText" class="error">{{ errorText }}</p>
 
     <section v-if="course" class="card">
       <h2>{{ course.title }}</h2>
-      <p>Teacher: {{ course.teacher_name }}</p>
-      <p>Schedule: {{ course.start_time }} - {{ course.end_time }}</p>
-      <a v-if="joinUrl" :href="joinUrl" target="_blank">Open Meeting</a>
-      <button @click="checkOut">Leave classroom</button>
+      <p>讲师：{{ course.teacher_name }}</p>
+      <p>时间：{{ course.start_time }} - {{ course.end_time }}</p>
+      <a v-if="joinUrl" :href="joinUrl" target="_blank">打开直播间</a>
+      <button @click="checkOut">离开课堂</button>
 
       <div class="replay-box">
-        <h3>Replays</h3>
+        <h3>课程回放</h3>
         <ul v-if="replays.length > 0" class="replay-list">
           <li v-for="item in replays" :key="item.id">
             <a :href="item.replay_url" target="_blank">{{ item.title }}</a>
-            <small>{{ item.duration_seconds || 0 }}s</small>
+            <small>{{ item.duration_seconds || 0 }} 秒</small>
           </li>
         </ul>
-        <p v-else>No replay yet</p>
+        <p v-else>暂无回放</p>
 
         <form v-if="canManageReplay" class="replay-form" @submit.prevent="addReplay">
-          <input v-model="replayForm.title" placeholder="Replay title" required />
-          <input v-model="replayForm.replayUrl" placeholder="Replay URL" required />
-          <input v-model="replayForm.durationSeconds" placeholder="Duration seconds" type="number" min="1" />
+          <input v-model="replayForm.title" placeholder="回放标题" required />
+          <input v-model="replayForm.replayUrl" placeholder="回放链接" required />
+          <input v-model="replayForm.durationSeconds" placeholder="时长（秒）" type="number" min="1" />
           <button type="submit" :disabled="addingReplay">
-            {{ addingReplay ? "Saving..." : "Add Replay" }}
+            {{ addingReplay ? "保存中..." : "添加回放" }}
           </button>
         </form>
       </div>

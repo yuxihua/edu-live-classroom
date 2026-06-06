@@ -24,6 +24,31 @@ const canCreateCourse = ["admin", "teacher"].includes(user.role);
 const isStudent = user.role === "student";
 const deletingId = ref(0);
 
+const roleLabelMap = {
+  admin: "管理员",
+  teacher: "讲师",
+  student: "学员"
+};
+
+const messageMap = {
+  "Failed to load courses": "加载课程失败",
+  "Failed to enroll": "报名失败",
+  "Failed to delete course": "删除课程失败",
+  "Failed to create course": "创建课程失败",
+  "Only admin or teacher can create course": "仅管理员或讲师可以创建课程",
+  "Only students can enroll": "仅学员可以报名",
+  "Invalid courseId": "课程编号无效"
+};
+
+const toChineseMessage = (message, fallback) => {
+  if (!message) {
+    return fallback;
+  }
+  return messageMap[message] || message;
+};
+
+const roleText = roleLabelMap[user.role] || user.role || "未知角色";
+
 const fetchCourses = async () => {
   loading.value = true;
   errorText.value = "";
@@ -35,7 +60,7 @@ const fetchCourses = async () => {
     });
     courses.value = data;
   } catch (error) {
-    errorText.value = error.response?.data?.message || "Failed to load courses";
+    errorText.value = toChineseMessage(error.response?.data?.message, "加载课程失败");
   } finally {
     loading.value = false;
   }
@@ -48,7 +73,7 @@ const enrollCourse = async (id) => {
     await http.post(`/courses/${id}/enroll`);
     await fetchCourses();
   } catch (error) {
-    errorText.value = error.response?.data?.message || "Failed to enroll";
+    errorText.value = toChineseMessage(error.response?.data?.message, "报名失败");
   }
 };
 
@@ -59,7 +84,7 @@ const deleteCourse = async (id) => {
     await http.delete(`/courses/${id}`);
     await fetchCourses();
   } catch (error) {
-    errorText.value = error.response?.data?.message || "Failed to delete course";
+    errorText.value = toChineseMessage(error.response?.data?.message, "删除课程失败");
   } finally {
     deletingId.value = 0;
   }
@@ -84,7 +109,7 @@ const createCourse = async () => {
     };
     await fetchCourses();
   } catch (error) {
-    createError.value = error.response?.data?.message || "Failed to create course";
+    createError.value = toChineseMessage(error.response?.data?.message, "创建课程失败");
   } finally {
     creating.value = false;
   }
@@ -103,53 +128,53 @@ onMounted(fetchCourses);
   <main class="layout">
     <header class="header">
       <div>
-        <h1>Course Dashboard</h1>
-        <p>{{ user.fullName }} ({{ user.role }})</p>
+        <h1>课程管理</h1>
+        <p>{{ user.fullName }}（{{ roleText }}）</p>
       </div>
-      <button @click="logout">Logout</button>
+      <button @click="logout">退出登录</button>
     </header>
 
     <section class="panel" v-if="canCreateCourse">
-      <h2>Create Course</h2>
+      <h2>创建课程</h2>
       <form class="create-form" @submit.prevent="createCourse">
-        <input v-model="newCourse.title" placeholder="Course title" required />
-        <input v-model="newCourse.subject" placeholder="Subject" />
-        <input v-model="newCourse.teacherName" placeholder="Teacher name" required />
+        <input v-model="newCourse.title" placeholder="课程标题" required />
+        <input v-model="newCourse.subject" placeholder="学科" />
+        <input v-model="newCourse.teacherName" placeholder="讲师姓名" required />
         <input v-model="newCourse.startTime" type="datetime-local" required />
         <input v-model="newCourse.endTime" type="datetime-local" required />
-        <input v-model="newCourse.meetingUrl" placeholder="OpenMeetings URL" />
+        <input v-model="newCourse.meetingUrl" placeholder="OpenMeetings 链接" />
         <button type="submit" :disabled="creating">
-          {{ creating ? "Creating..." : "Create course" }}
+          {{ creating ? "创建中..." : "创建课程" }}
         </button>
       </form>
       <p v-if="createError" class="error">{{ createError }}</p>
     </section>
 
     <section class="panel">
-      <h2>Course List</h2>
+      <h2>课程列表</h2>
       <div class="toolbar">
-        <input v-model="keyword" placeholder="Search title or subject" />
-        <button @click="fetchCourses">Search</button>
+        <input v-model="keyword" placeholder="搜索课程标题或学科" />
+        <button @click="fetchCourses">搜索</button>
       </div>
-      <p v-if="loading">Loading courses...</p>
+      <p v-if="loading">课程加载中...</p>
       <p v-else-if="errorText" class="error">{{ errorText }}</p>
       <ul v-else class="course-list">
         <li v-for="course in courses" :key="course.id">
           <div>
             <strong>{{ course.title }}</strong>
-            <p>{{ course.teacher_name }} | {{ course.subject || "General" }}</p>
+            <p>{{ course.teacher_name }} | {{ course.subject || "通用" }}</p>
             <small>{{ course.start_time }} - {{ course.end_time }}</small>
-            <small v-if="isStudent">{{ course.enrolled ? "Enrolled" : "Not enrolled" }}</small>
+            <small v-if="isStudent">{{ course.enrolled ? "已报名" : "未报名" }}</small>
           </div>
           <div class="actions">
-            <button @click="goClassroom(course.id)">Enter</button>
-            <button v-if="isStudent && !course.enrolled" @click="enrollCourse(course.id)">Enroll</button>
+            <button @click="goClassroom(course.id)">进入课堂</button>
+            <button v-if="isStudent && !course.enrolled" @click="enrollCourse(course.id)">报名</button>
             <button
               v-if="canCreateCourse"
               :disabled="deletingId === course.id"
               @click="deleteCourse(course.id)"
             >
-              {{ deletingId === course.id ? "Deleting..." : "Delete" }}
+              {{ deletingId === course.id ? "删除中..." : "删除" }}
             </button>
           </div>
         </li>
