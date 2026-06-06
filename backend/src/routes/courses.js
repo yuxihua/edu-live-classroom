@@ -82,6 +82,29 @@ async function ensureCourseScope(req, courseId) {
   return rows.length > 0;
 }
 
+async function resolveTeacherForCourse(req, teacherUserId, teacherName) {
+  if (req.user.role === "teacher") {
+    const [rows] = await pool.query("SELECT id, full_name FROM users WHERE id = ? AND role = 'teacher' LIMIT 1", [req.user.userId]);
+    if (rows.length === 0) return null;
+    return { teacherUserId: req.user.userId, teacherName: rows[0].full_name };
+  }
+
+  const normalizedTeacherUserId = teacherUserId ? Number(teacherUserId) : 0;
+  if (normalizedTeacherUserId > 0) {
+    const scope = buildScopeForAlias(req.user, "u");
+    const [rows] = await pool.query(
+      `SELECT u.id, u.full_name FROM users u WHERE u.id = ? AND u.role = 'teacher' ${scope.clause} LIMIT 1`,
+      [normalizedTeacherUserId, ...scope.params]
+    );
+    if (rows.length === 0) return null;
+    return { teacherUserId: rows[0].id, teacherName: rows[0].full_name };
+  }
+
+  const normalizedTeacherName = String(teacherName || "").trim();
+  if (!normalizedTeacherName) return null;
+  return { teacherUserId: null, teacherName: normalizedTeacherName };
+}
+
 async function recordAudit(req, action, resourceType, resourceId = null, detail = null) {
   try {
     await pool.query(
@@ -107,6 +130,7 @@ router.get("/", requireAuth, async (req, res) => {
          c.title,
          c.subject,
          c.teacher_name,
+         c.teacher_user_id,
          c.assistant_name,
          c.start_time,
          c.end_time,
@@ -137,8 +161,8 @@ router.post("/", requireAuth, async (req, res) => {
     return res.status(403).json({ message: "Only admin, organization admin, district admin or teacher can create course" });
   }
 
-  const { title, subject, teacherName, assistantName, classroomId, startTime, endTime, meetingUrl, priceCents } = req.body;
-  if (!title || !teacherName || !startTime || !endTime) {
+  const { title, subject, teacherName, teacherUserId, assistantName, classroomId, startTime, endTime, meetingUrl, priceCents } = req.body;
+  if (!title || (!teacherName && !teacherUserId) || !startTime || !endTime) {
     return res.status(400).json({ message: "Missing required fields" });
   }
 
@@ -172,9 +196,14 @@ router.post("/", requireAuth, async (req, res) => {
       return res.status(400).json({ message: "Classroom not found in scope" });
     }
 
+    const resolvedTeacher = await resolveTeacherForCourse(req, teacherUserId, teacherName);
+    if (!resolvedTeacher) {
+      return res.status(400).json({ message: "Teacher not found in scope" });
+    }
+
     const [result] = await pool.query(
       "INSERT INTO courses (organization_id, district_id, classroom_id, title, subject, teacher_name, teacher_user_id, assistant_name, start_time, end_time, meeting_url, created_by_user_id, price_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [owner.organizationId, owner.districtId, classroomId || null, title, subject || null, teacherName, req.user.role === "teacher" ? req.user.userId : null, assistantName || null, startTime, endTime, meetingUrl || null, req.user.userId, Number(priceCents || 0)]
+      [owner.organizationId, owner.districtId, classroomId || null, title, subject || null, resolvedTeacher.teacherName, resolvedTeacher.teacherUserId, assistantName || null, startTime, endTime, meetingUrl || null, req.user.userId, Number(priceCents || 0)]
     );
 
     if (!meetingUrl && hasOpenMeetingsBaseUrl) {
@@ -184,7 +213,7 @@ router.post("/", requireAuth, async (req, res) => {
       }
     }
 
-    await recordAudit(req, "create", "course", result.insertId, { title, subject, teacherName, assistantName: assistantName || null });
+    await recordAudit(req, "create", "course", result.insertId, { title, subject, teacherName: resolvedTeacher.teacherName, teacherUserId: resolvedTeacher.teacherUserId, assistantName: assistantName || null });
 
     return res.status(201).json({ id: result.insertId });
   } catch (error) {
@@ -202,8 +231,8 @@ router.put("/:id", requireAuth, async (req, res) => {
     return res.status(400).json({ message: "Invalid courseId" });
   }
 
-  const { title, subject, teacherName, assistantName, classroomId, startTime, endTime, meetingUrl, priceCents } = req.body;
-  if (!title || !teacherName || !startTime || !endTime) {
+  const { title, subject, teacherName, teacherUserId, assistantName, classroomId, startTime, endTime, meetingUrl, priceCents } = req.body;
+  if (!title || (!teacherName && !teacherUserId) || !startTime || !endTime) {
     return res.status(400).json({ message: "Missing required fields" });
   }
 
@@ -235,16 +264,21 @@ router.put("/:id", requireAuth, async (req, res) => {
       return res.status(400).json({ message: "Classroom not found in scope" });
     }
 
+    const resolvedTeacher = await resolveTeacherForCourse(req, teacherUserId, teacherName);
+    if (!resolvedTeacher) {
+      return res.status(400).json({ message: "Teacher not found in scope" });
+    }
+
     const [result] = await pool.query(
-      "UPDATE courses SET organization_id = ?, district_id = ?, classroom_id = ?, title = ?, subject = ?, teacher_name = ?, assistant_name = ?, start_time = ?, end_time = ?, meeting_url = ?, price_cents = ? WHERE id = ?",
-      [owner.organizationId, owner.districtId, classroomId || null, title, subject || null, teacherName, assistantName || null, startTime, endTime, meetingUrl || null, Number(priceCents || 0), courseId]
+      "UPDATE courses SET organization_id = ?, district_id = ?, classroom_id = ?, title = ?, subject = ?, teacher_name = ?, teacher_user_id = ?, assistant_name = ?, start_time = ?, end_time = ?, meeting_url = ?, price_cents = ? WHERE id = ?",
+      [owner.organizationId, owner.districtId, classroomId || null, title, subject || null, resolvedTeacher.teacherName, resolvedTeacher.teacherUserId, assistantName || null, startTime, endTime, meetingUrl || null, Number(priceCents || 0), courseId]
     );
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: "Course not found" });
     }
 
-    await recordAudit(req, "update", "course", courseId, { title, subject, teacherName, assistantName: assistantName || null });
+    await recordAudit(req, "update", "course", courseId, { title, subject, teacherName: resolvedTeacher.teacherName, teacherUserId: resolvedTeacher.teacherUserId, assistantName: assistantName || null });
 
     return res.json({ message: "Course updated" });
   } catch (error) {
