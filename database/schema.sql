@@ -114,14 +114,102 @@ VALUES ('Admin User', 'admin@example.com', '$2a$10$QwQ3vq2zMw2XkV4hIqV6Ue7YfPyD2
 ON DUPLICATE KEY UPDATE email = email;
 
 ALTER TABLE users
-  MODIFY COLUMN role VARCHAR(40) NOT NULL,
-  ADD COLUMN IF NOT EXISTS organization_id BIGINT UNSIGNED NULL,
-  ADD COLUMN IF NOT EXISTS district_id BIGINT UNSIGNED NULL,
-  ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active';
+  MODIFY COLUMN role VARCHAR(40) NOT NULL;
 
-ALTER TABLE courses
-  ADD COLUMN IF NOT EXISTS organization_id BIGINT UNSIGNED NULL,
-  ADD COLUMN IF NOT EXISTS district_id BIGINT UNSIGNED NULL,
-  ADD COLUMN IF NOT EXISTS teacher_user_id BIGINT UNSIGNED NULL,
-  ADD COLUMN IF NOT EXISTS assistant_name VARCHAR(120) NULL,
-  ADD COLUMN IF NOT EXISTS assistant_user_id BIGINT UNSIGNED NULL;
+SET @db = DATABASE();
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = @db AND table_name = 'users' AND column_name = 'organization_id'
+  ),
+  'SELECT 1',
+  'ALTER TABLE users ADD COLUMN organization_id BIGINT UNSIGNED NULL'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = @db AND table_name = 'users' AND column_name = 'district_id'
+  ),
+  'SELECT 1',
+  'ALTER TABLE users ADD COLUMN district_id BIGINT UNSIGNED NULL'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = @db AND table_name = 'users' AND column_name = 'status'
+  ),
+  'SELECT 1',
+  'ALTER TABLE users ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT ''active'''
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = @db AND table_name = 'courses' AND column_name = 'organization_id'
+  ),
+  'SELECT 1',
+  'ALTER TABLE courses ADD COLUMN organization_id BIGINT UNSIGNED NULL'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = @db AND table_name = 'courses' AND column_name = 'district_id'
+  ),
+  'SELECT 1',
+  'ALTER TABLE courses ADD COLUMN district_id BIGINT UNSIGNED NULL'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = @db AND table_name = 'courses' AND column_name = 'teacher_user_id'
+  ),
+  'SELECT 1',
+  'ALTER TABLE courses ADD COLUMN teacher_user_id BIGINT UNSIGNED NULL'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = @db AND table_name = 'courses' AND column_name = 'assistant_name'
+  ),
+  'SELECT 1',
+  'ALTER TABLE courses ADD COLUMN assistant_name VARCHAR(120) NULL'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = @db AND table_name = 'courses' AND column_name = 'assistant_user_id'
+  ),
+  'SELECT 1',
+  'ALTER TABLE courses ADD COLUMN assistant_user_id BIGINT UNSIGNED NULL'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
