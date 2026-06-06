@@ -63,6 +63,16 @@ function resolveCourseOwner(req) {
   return { organizationId, districtId };
 }
 
+async function ensureClassroomScope(req, classroomId) {
+  if (!classroomId) return true;
+  const scope = buildScopeForAlias(req.user, "fc");
+  const [rows] = await pool.query(
+    `SELECT fc.id FROM fixed_classrooms fc WHERE fc.id = ? ${scope.clause} LIMIT 1`,
+    [classroomId, ...scope.params]
+  );
+  return rows.length > 0;
+}
+
 async function ensureCourseScope(req, courseId) {
   const scope = buildScopeForAlias(req.user, "c");
   const [rows] = await pool.query(
@@ -122,7 +132,7 @@ router.post("/", requireAuth, async (req, res) => {
     return res.status(403).json({ message: "Only admin, organization admin, district admin or teacher can create course" });
   }
 
-  const { title, subject, teacherName, assistantName, startTime, endTime, meetingUrl } = req.body;
+  const { title, subject, teacherName, assistantName, classroomId, startTime, endTime, meetingUrl, priceCents } = req.body;
   if (!title || !teacherName || !startTime || !endTime) {
     return res.status(400).json({ message: "Missing required fields" });
   }
@@ -137,9 +147,14 @@ router.post("/", requireAuth, async (req, res) => {
   const owner = resolveCourseOwner(req);
 
   try {
+    const classroomAllowed = await ensureClassroomScope(req, classroomId ? Number(classroomId) : null);
+    if (!classroomAllowed) {
+      return res.status(400).json({ message: "Classroom not found in scope" });
+    }
+
     const [result] = await pool.query(
-      "INSERT INTO courses (organization_id, district_id, title, subject, teacher_name, teacher_user_id, assistant_name, start_time, end_time, meeting_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [owner.organizationId, owner.districtId, title, subject || null, teacherName, req.user.role === "teacher" ? req.user.userId : null, assistantName || null, startTime, endTime, meetingUrl || null]
+      "INSERT INTO courses (organization_id, district_id, classroom_id, title, subject, teacher_name, teacher_user_id, assistant_name, start_time, end_time, meeting_url, created_by_user_id, price_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [owner.organizationId, owner.districtId, classroomId || null, title, subject || null, teacherName, req.user.role === "teacher" ? req.user.userId : null, assistantName || null, startTime, endTime, meetingUrl || null, req.user.userId, Number(priceCents || 0)]
     );
 
     if (!meetingUrl && hasOpenMeetingsBaseUrl) {
@@ -167,7 +182,7 @@ router.put("/:id", requireAuth, async (req, res) => {
     return res.status(400).json({ message: "Invalid courseId" });
   }
 
-  const { title, subject, teacherName, assistantName, startTime, endTime, meetingUrl } = req.body;
+  const { title, subject, teacherName, assistantName, classroomId, startTime, endTime, meetingUrl, priceCents } = req.body;
   if (!title || !teacherName || !startTime || !endTime) {
     return res.status(400).json({ message: "Missing required fields" });
   }
@@ -178,9 +193,14 @@ router.put("/:id", requireAuth, async (req, res) => {
       return res.status(404).json({ message: "Course not found" });
     }
 
+    const classroomAllowed = await ensureClassroomScope(req, classroomId ? Number(classroomId) : null);
+    if (!classroomAllowed) {
+      return res.status(400).json({ message: "Classroom not found in scope" });
+    }
+
     const [result] = await pool.query(
-      "UPDATE courses SET title = ?, subject = ?, teacher_name = ?, assistant_name = ?, start_time = ?, end_time = ?, meeting_url = ? WHERE id = ?",
-      [title, subject || null, teacherName, assistantName || null, startTime, endTime, meetingUrl || null, courseId]
+      "UPDATE courses SET classroom_id = ?, title = ?, subject = ?, teacher_name = ?, assistant_name = ?, start_time = ?, end_time = ?, meeting_url = ?, price_cents = ? WHERE id = ?",
+      [classroomId || null, title, subject || null, teacherName, assistantName || null, startTime, endTime, meetingUrl || null, Number(priceCents || 0), courseId]
     );
 
     if (result.affectedRows === 0) {
@@ -243,6 +263,109 @@ router.post("/:id/enroll", requireAuth, async (req, res) => {
     return res.status(201).json({ message: "Enrolled" });
   } catch (error) {
     return res.status(500).json({ message: "Failed to enroll" });
+  }
+});
+
+router.post("/:id/purchase", requireAuth, async (req, res) => {
+  if (!["student", "parent"].includes(req.user.role)) {
+    return res.status(403).json({ message: "Only students or parents can purchase" });
+  }
+
+  const courseId = Number(req.params.id);
+  if (!Number.isInteger(courseId) || courseId <= 0) {
+    return res.status(400).json({ message: "Invalid courseId" });
+  }
+
+  const targetStudentId = req.user.role === "student" ? req.user.userId : Number(req.body.studentUserId || 0);
+  if (!Number.isInteger(targetStudentId) || targetStudentId <= 0) {
+    return res.status(400).json({ message: "studentUserId is required" });
+  }
+
+  try {
+    if (req.user.role === "parent") {
+      const [linkRows] = await pool.query(
+        "SELECT id FROM guardian_student_links WHERE parent_user_id = ? AND student_user_id = ? LIMIT 1",
+        [req.user.userId, targetStudentId]
+      );
+      if (linkRows.length === 0) {
+        return res.status(403).json({ message: "Parent not linked to this student" });
+      }
+    }
+
+    const [courseRows] = await pool.query("SELECT id, price_cents FROM courses WHERE id = ? LIMIT 1", [courseId]);
+    if (courseRows.length === 0) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    await pool.query(
+      "INSERT INTO course_purchases (course_id, buyer_user_id, student_user_id, amount_cents, status) VALUES (?, ?, ?, ?, 'paid') ON DUPLICATE KEY UPDATE amount_cents = VALUES(amount_cents), status = 'paid'",
+      [courseId, req.user.userId, targetStudentId, Number(courseRows[0].price_cents || 0)]
+    );
+
+    await pool.query(
+      "INSERT INTO course_enrollments (course_id, user_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE user_id = user_id",
+      [courseId, targetStudentId]
+    );
+
+    await recordAudit(req, "purchase", "course", courseId, { buyerUserId: req.user.userId, studentUserId: targetStudentId });
+    return res.status(201).json({ message: "Purchased" });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to purchase course" });
+  }
+});
+
+router.get("/:id/live-rooms", requireAuth, async (req, res) => {
+  const courseId = Number(req.params.id);
+  if (!Number.isInteger(courseId) || courseId <= 0) {
+    return res.status(400).json({ message: "Invalid courseId" });
+  }
+
+  try {
+    const inScope = await ensureCourseScope(req, courseId);
+    if (!inScope) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    const [rows] = await pool.query(
+      "SELECT id, name, meeting_url, created_by_user_id, created_at FROM live_rooms WHERE course_id = ? ORDER BY id ASC",
+      [courseId]
+    );
+    return res.json(rows);
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to fetch live rooms" });
+  }
+});
+
+router.post("/:id/live-rooms", requireAuth, async (req, res) => {
+  if (!(await canManageCourse(req))) {
+    return res.status(403).json({ message: "Only admin, organization admin, district admin or teacher can create live room" });
+  }
+
+  const courseId = Number(req.params.id);
+  if (!Number.isInteger(courseId) || courseId <= 0) {
+    return res.status(400).json({ message: "Invalid courseId" });
+  }
+
+  const { name, meetingUrl } = req.body;
+  if (!name || !meetingUrl) {
+    return res.status(400).json({ message: "name and meetingUrl are required" });
+  }
+
+  try {
+    const inScope = await ensureCourseScope(req, courseId);
+    if (!inScope) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    const [result] = await pool.query(
+      "INSERT INTO live_rooms (course_id, name, meeting_url, created_by_user_id) VALUES (?, ?, ?, ?)",
+      [courseId, name, meetingUrl, req.user.userId]
+    );
+
+    await recordAudit(req, "create", "live_room", result.insertId, { courseId, name });
+    return res.status(201).json({ id: result.insertId });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to create live room" });
   }
 });
 

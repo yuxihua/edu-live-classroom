@@ -146,6 +146,82 @@ router.get("/organizations", async (req, res) => {
   }
 });
 
+router.get("/classrooms", async (req, res) => {
+  if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT c.id, c.name, c.code, c.organization_id, c.district_id, c.assistant_user_id, c.created_at,
+              o.name AS organization_name, d.name AS district_name, u.full_name AS assistant_name
+       FROM fixed_classrooms c
+       LEFT JOIN organizations o ON o.id = c.organization_id
+       LEFT JOIN districts d ON d.id = c.district_id
+       LEFT JOIN users u ON u.id = c.assistant_user_id
+       ORDER BY c.id DESC`
+    );
+    return res.json(rows);
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to fetch classrooms" });
+  }
+});
+
+router.post("/classrooms", async (req, res) => {
+  if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
+
+  const { name, code, organizationId, districtId, assistantUserId } = req.body;
+  if (!name || !code || !organizationId || !districtId) {
+    return res.status(400).json({ message: "name, code, organizationId and districtId are required" });
+  }
+
+  try {
+    const [result] = await pool.query(
+      "INSERT INTO fixed_classrooms (name, code, organization_id, district_id, assistant_user_id) VALUES (?, ?, ?, ?, ?)",
+      [name, code, organizationId, districtId, assistantUserId || null]
+    );
+    await recordAudit(req, "create", "classroom", result.insertId, { name, code, organizationId, districtId, assistantUserId: assistantUserId || null });
+    return res.status(201).json({ id: result.insertId });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to create classroom" });
+  }
+});
+
+router.put("/classrooms/:id", async (req, res) => {
+  if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
+
+  const classroomId = Number(req.params.id);
+  const { name, code, organizationId, districtId, assistantUserId } = req.body;
+  if (!Number.isInteger(classroomId) || classroomId <= 0) return res.status(400).json({ message: "Invalid classroomId" });
+  if (!name || !code || !organizationId || !districtId) return res.status(400).json({ message: "name, code, organizationId and districtId are required" });
+
+  try {
+    const [result] = await pool.query(
+      "UPDATE fixed_classrooms SET name = ?, code = ?, organization_id = ?, district_id = ?, assistant_user_id = ? WHERE id = ?",
+      [name, code, organizationId, districtId, assistantUserId || null, classroomId]
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ message: "Classroom not found" });
+    await recordAudit(req, "update", "classroom", classroomId, { name, code, organizationId, districtId, assistantUserId: assistantUserId || null });
+    return res.json({ message: "Classroom updated" });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to update classroom" });
+  }
+});
+
+router.delete("/classrooms/:id", async (req, res) => {
+  if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
+
+  const classroomId = Number(req.params.id);
+  if (!Number.isInteger(classroomId) || classroomId <= 0) return res.status(400).json({ message: "Invalid classroomId" });
+
+  try {
+    const [result] = await pool.query("DELETE FROM fixed_classrooms WHERE id = ?", [classroomId]);
+    if (result.affectedRows === 0) return res.status(404).json({ message: "Classroom not found" });
+    await recordAudit(req, "delete", "classroom", classroomId);
+    return res.json({ message: "Classroom deleted" });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to delete classroom" });
+  }
+});
+
 router.post("/organizations", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
@@ -216,6 +292,61 @@ router.get("/users", async (req, res) => {
     return res.json(rows);
   } catch (error) {
     return res.status(500).json({ message: "Failed to fetch users" });
+  }
+});
+
+router.get("/guardian-links", async (req, res) => {
+  if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT gl.id, gl.parent_user_id, gl.student_user_id, gl.created_at,
+              p.full_name AS parent_name, p.email AS parent_email,
+              s.full_name AS student_name, s.email AS student_email
+       FROM guardian_student_links gl
+       LEFT JOIN users p ON p.id = gl.parent_user_id
+       LEFT JOIN users s ON s.id = gl.student_user_id
+       ORDER BY gl.id DESC`
+    );
+    return res.json(rows);
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to fetch guardian links" });
+  }
+});
+
+router.post("/guardian-links", async (req, res) => {
+  if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
+
+  const { parentUserId, studentUserId } = req.body;
+  if (!parentUserId || !studentUserId) {
+    return res.status(400).json({ message: "parentUserId and studentUserId are required" });
+  }
+
+  try {
+    const [result] = await pool.query(
+      "INSERT INTO guardian_student_links (parent_user_id, student_user_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE student_user_id = student_user_id",
+      [parentUserId, studentUserId]
+    );
+    await recordAudit(req, "create", "guardian_link", result.insertId || null, { parentUserId, studentUserId });
+    return res.status(201).json({ message: "Guardian link created" });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to create guardian link" });
+  }
+});
+
+router.delete("/guardian-links/:id", async (req, res) => {
+  if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
+
+  const linkId = Number(req.params.id);
+  if (!Number.isInteger(linkId) || linkId <= 0) return res.status(400).json({ message: "Invalid linkId" });
+
+  try {
+    const [result] = await pool.query("DELETE FROM guardian_student_links WHERE id = ?", [linkId]);
+    if (result.affectedRows === 0) return res.status(404).json({ message: "Guardian link not found" });
+    await recordAudit(req, "delete", "guardian_link", linkId);
+    return res.json({ message: "Guardian link deleted" });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to delete guardian link" });
   }
 });
 

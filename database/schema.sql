@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS districts (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  organization_id BIGINT UNSIGNED NULL,
   name VARCHAR(120) NOT NULL,
   code VARCHAR(60) NOT NULL UNIQUE,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -28,6 +29,19 @@ CREATE TABLE IF NOT EXISTS organizations (
   category VARCHAR(40) NOT NULL DEFAULT 'school',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_organization_district FOREIGN KEY (district_id) REFERENCES districts(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS fixed_classrooms (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  organization_id BIGINT UNSIGNED NOT NULL,
+  district_id BIGINT UNSIGNED NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  code VARCHAR(60) NOT NULL,
+  assistant_user_id BIGINT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_classroom_code (organization_id, code),
+  CONSTRAINT fk_classroom_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  CONSTRAINT fk_classroom_district FOREIGN KEY (district_id) REFERENCES districts(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS role_permissions (
@@ -66,16 +80,53 @@ CREATE TABLE IF NOT EXISTS courses (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   organization_id BIGINT UNSIGNED NULL,
   district_id BIGINT UNSIGNED NULL,
+  classroom_id BIGINT UNSIGNED NULL,
   title VARCHAR(180) NOT NULL,
   subject VARCHAR(120) NULL,
   teacher_name VARCHAR(120) NOT NULL,
   teacher_user_id BIGINT UNSIGNED NULL,
   assistant_name VARCHAR(120) NULL,
   assistant_user_id BIGINT UNSIGNED NULL,
+  created_by_user_id BIGINT UNSIGNED NULL,
+  price_cents INT UNSIGNED NOT NULL DEFAULT 0,
   start_time DATETIME NOT NULL,
   end_time DATETIME NOT NULL,
   meeting_url VARCHAR(500) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS live_rooms (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  course_id BIGINT UNSIGNED NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  meeting_url VARCHAR(500) NOT NULL,
+  created_by_user_id BIGINT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_live_room_course FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS guardian_student_links (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  parent_user_id BIGINT UNSIGNED NOT NULL,
+  student_user_id BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_guardian_student (parent_user_id, student_user_id),
+  CONSTRAINT fk_guardian_parent FOREIGN KEY (parent_user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_guardian_student FOREIGN KEY (student_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS course_purchases (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  course_id BIGINT UNSIGNED NOT NULL,
+  buyer_user_id BIGINT UNSIGNED NOT NULL,
+  student_user_id BIGINT UNSIGNED NOT NULL,
+  amount_cents INT UNSIGNED NOT NULL DEFAULT 0,
+  status VARCHAR(20) NOT NULL DEFAULT 'paid',
+  purchased_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_course_student_paid (course_id, student_user_id, status),
+  CONSTRAINT fk_purchase_course FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
+  CONSTRAINT fk_purchase_buyer FOREIGN KEY (buyer_user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_purchase_student FOREIGN KEY (student_user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS attendance (
@@ -157,10 +208,34 @@ DEALLOCATE PREPARE stmt;
 SET @sql = IF(
   EXISTS(
     SELECT 1 FROM information_schema.columns
+    WHERE table_schema = @db AND table_name = 'districts' AND column_name = 'organization_id'
+  ),
+  'SELECT 1',
+  'ALTER TABLE districts ADD COLUMN organization_id BIGINT UNSIGNED NULL'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = @db AND table_name = 'courses' AND column_name = 'organization_id'
   ),
   'SELECT 1',
   'ALTER TABLE courses ADD COLUMN organization_id BIGINT UNSIGNED NULL'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = @db AND table_name = 'courses' AND column_name = 'classroom_id'
+  ),
+  'SELECT 1',
+  'ALTER TABLE courses ADD COLUMN classroom_id BIGINT UNSIGNED NULL'
 );
 PREPARE stmt FROM @sql;
 EXECUTE stmt;
@@ -209,6 +284,30 @@ SET @sql = IF(
   ),
   'SELECT 1',
   'ALTER TABLE courses ADD COLUMN assistant_user_id BIGINT UNSIGNED NULL'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = @db AND table_name = 'courses' AND column_name = 'created_by_user_id'
+  ),
+  'SELECT 1',
+  'ALTER TABLE courses ADD COLUMN created_by_user_id BIGINT UNSIGNED NULL'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = @db AND table_name = 'courses' AND column_name = 'price_cents'
+  ),
+  'SELECT 1',
+  'ALTER TABLE courses ADD COLUMN price_cents INT UNSIGNED NOT NULL DEFAULT 0'
 );
 PREPARE stmt FROM @sql;
 EXECUTE stmt;
