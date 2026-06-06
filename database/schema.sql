@@ -4,7 +4,7 @@ USE edu_live_classroom;
 CREATE TABLE IF NOT EXISTS users (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   full_name VARCHAR(120) NOT NULL,
-  email VARCHAR(160) NOT NULL UNIQUE,
+  email VARCHAR(160) NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL,
   role VARCHAR(40) NOT NULL,
   organization_id BIGINT UNSIGNED NULL,
@@ -166,6 +166,18 @@ ON DUPLICATE KEY UPDATE email = email;
 
 ALTER TABLE users
   MODIFY COLUMN role VARCHAR(40) NOT NULL;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'email' AND is_nullable = 'NO'
+  ),
+  'ALTER TABLE users MODIFY COLUMN email VARCHAR(160) NULL',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 SET @db = DATABASE();
 

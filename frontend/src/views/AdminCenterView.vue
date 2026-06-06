@@ -60,6 +60,7 @@ const messageMap = {
   "Failed to create user": "创建账号失败",
   "Failed to update user": "更新账号失败",
   "Failed to delete user": "删除账号失败",
+  "Email already exists": "邮箱已存在",
   "Failed to load settings": "加载系统设置失败",
   "Failed to update setting": "更新系统设置失败",
   "Failed to fetch permissions": "加载权限失败",
@@ -233,6 +234,9 @@ const deleteClassroom = async (id) => {
 };
 
 const createUser = async () => {
+  errorText.value = "";
+  formMessage.value = "";
+
   if (currentUser.role === "org_admin") {
     userForm.value.organizationId = String(myOrganizationId.value || "");
   }
@@ -247,33 +251,39 @@ const createUser = async () => {
     return;
   }
 
-  if (editingUserId.value > 0) {
-    await http.put(`/admin/users/${editingUserId.value}`, {
-      ...userForm.value,
-      organizationId: userForm.value.organizationId || null,
-      districtId: userForm.value.districtId || null
-    });
-    formMessage.value = "账号已更新";
-  } else {
-    await http.post("/admin/users", {
-      ...userForm.value,
-      organizationId: userForm.value.organizationId || null,
-      districtId: userForm.value.districtId || null
-    });
-    formMessage.value = "账号已创建";
-  }
+  try {
+    if (editingUserId.value > 0) {
+      await http.put(`/admin/users/${editingUserId.value}`, {
+        ...userForm.value,
+        email: userForm.value.email || null,
+        organizationId: userForm.value.organizationId || null,
+        districtId: userForm.value.districtId || null
+      });
+      formMessage.value = "账号已更新";
+    } else {
+      await http.post("/admin/users", {
+        ...userForm.value,
+        email: userForm.value.email || null,
+        organizationId: userForm.value.organizationId || null,
+        districtId: userForm.value.districtId || null
+      });
+      formMessage.value = "账号已创建";
+    }
 
-  userForm.value = {
-    fullName: "",
-    email: "",
-    password: "",
-    role: "teacher",
-    organizationId: "",
-    districtId: "",
-    status: "active"
-  };
-  editingUserId.value = 0;
-  await fetchUsers();
+    userForm.value = {
+      fullName: "",
+      email: "",
+      password: "",
+      role: "teacher",
+      organizationId: "",
+      districtId: "",
+      status: "active"
+    };
+    editingUserId.value = 0;
+    await fetchUsers();
+  } catch (error) {
+    errorText.value = toChineseMessage(error.response?.data?.message, editingUserId.value > 0 ? "更新账号失败" : "创建账号失败");
+  }
 };
 
 const startEditUser = (item) => {
@@ -556,7 +566,7 @@ onMounted(async () => {
       <h2>系统帐号管理</h2>
       <form class="form form-wide" @submit.prevent="createUser">
         <input v-model="userForm.fullName" placeholder="姓名" required />
-        <input v-model="userForm.email" placeholder="邮箱" required />
+        <input v-model="userForm.email" placeholder="邮箱（选填）" />
         <input v-model="userForm.password" :placeholder="editingUserId ? '新密码（不改可留空）' : '初始密码'" type="password" :required="!editingUserId" />
         <select v-model="userForm.role">
           <option v-for="item in scopedRoleOptions" :key="item" :value="item">{{ item }}</option>

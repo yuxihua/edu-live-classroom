@@ -598,7 +598,8 @@ router.post("/users", async (req, res) => {
   if (!scope) return res.status(403).json({ message: "Permission denied" });
 
   const { fullName, email, password, role, organizationId, districtId, status } = req.body;
-  if (!fullName || !email || !password || !role) {
+  const normalizedEmail = String(email || "").trim() || null;
+  if (!fullName || !password || !role) {
     return res.status(400).json({ message: "Missing required fields" });
   }
 
@@ -611,18 +612,20 @@ router.post("/users", async (req, res) => {
   if (!orgAllowed || !districtAllowed) return res.status(403).json({ message: "Permission denied" });
 
   try {
-    const [existing] = await pool.query("SELECT id FROM users WHERE email = ?", [email]);
-    if (existing.length > 0) {
-      return res.status(409).json({ message: "Email already exists" });
+    if (normalizedEmail) {
+      const [existing] = await pool.query("SELECT id FROM users WHERE email = ?", [normalizedEmail]);
+      if (existing.length > 0) {
+        return res.status(409).json({ message: "Email already exists" });
+      }
     }
 
     const hash = await bcrypt.hash(password, 10);
     const [result] = await pool.query(
       "INSERT INTO users (full_name, email, password_hash, role, organization_id, district_id, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [fullName, email, hash, role, organizationId || null, districtId || null, status || "active"]
+      [fullName, normalizedEmail, hash, role, organizationId || null, districtId || null, status || "active"]
     );
 
-    await recordAudit(req, "create", "user", result.insertId, { fullName, email, role, organizationId, districtId, status: status || "active" });
+    await recordAudit(req, "create", "user", result.insertId, { fullName, email: normalizedEmail, role, organizationId, districtId, status: status || "active" });
     return res.status(201).json({ id: result.insertId });
   } catch (error) {
     return res.status(500).json({ message: "Failed to create user" });
@@ -637,8 +640,9 @@ router.put("/users/:id", async (req, res) => {
 
   const userId = Number(req.params.id);
   const { fullName, email, password, role, organizationId, districtId, status } = req.body;
+  const normalizedEmail = String(email || "").trim() || null;
   if (!Number.isInteger(userId) || userId <= 0) return res.status(400).json({ message: "Invalid userId" });
-  if (!fullName || !email || !role) return res.status(400).json({ message: "Missing required fields" });
+  if (!fullName || !role) return res.status(400).json({ message: "Missing required fields" });
 
   const targetAllowed = await isUserAllowed(scope, userId);
   if (!targetAllowed) return res.status(403).json({ message: "Permission denied" });
@@ -652,8 +656,15 @@ router.put("/users/:id", async (req, res) => {
   if (!orgAllowed || !districtAllowed) return res.status(403).json({ message: "Permission denied" });
 
   try {
+    if (normalizedEmail) {
+      const [existing] = await pool.query("SELECT id FROM users WHERE email = ? AND id <> ? LIMIT 1", [normalizedEmail, userId]);
+      if (existing.length > 0) {
+        return res.status(409).json({ message: "Email already exists" });
+      }
+    }
+
     const hashPart = password ? await bcrypt.hash(password, 10) : null;
-    const params = [fullName, email, role, organizationId || null, districtId || null, status || "active"];
+    const params = [fullName, normalizedEmail, role, organizationId || null, districtId || null, status || "active"];
     let sql = "UPDATE users SET full_name = ?, email = ?, role = ?, organization_id = ?, district_id = ?, status = ?";
     if (hashPart) {
       sql += ", password_hash = ?";
@@ -665,7 +676,7 @@ router.put("/users/:id", async (req, res) => {
     const [result] = await pool.query(sql, params);
     if (result.affectedRows === 0) return res.status(404).json({ message: "User not found" });
 
-    await recordAudit(req, "update", "user", userId, { fullName, email, role, organizationId, districtId, status: status || "active" });
+    await recordAudit(req, "update", "user", userId, { fullName, email: normalizedEmail, role, organizationId, districtId, status: status || "active" });
     return res.json({ message: "User updated" });
   } catch (error) {
     return res.status(500).json({ message: "Failed to update user" });
