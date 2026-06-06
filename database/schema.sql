@@ -1,0 +1,57 @@
+CREATE DATABASE IF NOT EXISTS edu_live CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE edu_live;
+
+CREATE TABLE IF NOT EXISTS users (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  full_name VARCHAR(120) NOT NULL,
+  email VARCHAR(160) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  role ENUM('admin', 'teacher', 'student') NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS courses (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  title VARCHAR(180) NOT NULL,
+  subject VARCHAR(120) NULL,
+  teacher_name VARCHAR(120) NOT NULL,
+  start_time DATETIME NOT NULL,
+  end_time DATETIME NOT NULL,
+  meeting_url VARCHAR(500) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS attendance (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  course_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  check_in_at DATETIME NOT NULL,
+  check_out_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_attendance_course FOREIGN KEY (course_id) REFERENCES courses(id),
+  CONSTRAINT fk_attendance_user FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS course_enrollments (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  course_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_course_user (course_id, user_id),
+  CONSTRAINT fk_enrollment_course FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
+  CONSTRAINT fk_enrollment_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS course_replays (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  course_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(180) NOT NULL,
+  replay_url VARCHAR(500) NOT NULL,
+  duration_seconds INT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_replay_course FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE
+);
+
+INSERT INTO users (full_name, email, password_hash, role)
+VALUES ('Admin User', 'admin@example.com', '$2a$10$QwQ3vq2zMw2XkV4hIqV6Ue7YfPyD2Q4y0hRt0t.eoDWFj7R96LJ5O', 'admin')
+ON DUPLICATE KEY UPDATE email = email;
