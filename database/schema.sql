@@ -1,5 +1,5 @@
-CREATE DATABASE IF NOT EXISTS edu_live CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE edu_live;
+CREATE DATABASE IF NOT EXISTS edu_live_classroom CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE edu_live_classroom;
 
 CREATE TABLE IF NOT EXISTS users (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
