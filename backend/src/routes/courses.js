@@ -4,6 +4,20 @@ import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
+function buildOpenMeetingsRoomUrl(courseId) {
+  const baseUrl = process.env.OPENMEETINGS_ROOM_BASE_URL;
+  if (!baseUrl) {
+    return null;
+  }
+
+  try {
+    const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+    return `${normalizedBaseUrl}/${courseId}`;
+  } catch (error) {
+    return null;
+  }
+}
+
 function canManageCourse(role) {
   return ["admin", "teacher"].includes(role);
 }
@@ -51,11 +65,25 @@ router.post("/", requireAuth, async (req, res) => {
     return res.status(400).json({ message: "Missing required fields" });
   }
 
+  const hasOpenMeetingsBaseUrl = Boolean(process.env.OPENMEETINGS_ROOM_BASE_URL);
+  if (!meetingUrl && !hasOpenMeetingsBaseUrl) {
+    return res.status(500).json({
+      message: "OPENMEETINGS_ROOM_BASE_URL is not configured"
+    });
+  }
+
   try {
     const [result] = await pool.query(
       "INSERT INTO courses (title, subject, teacher_name, start_time, end_time, meeting_url) VALUES (?, ?, ?, ?, ?, ?)",
       [title, subject || null, teacherName, startTime, endTime, meetingUrl || null]
     );
+
+    if (!meetingUrl && hasOpenMeetingsBaseUrl) {
+      const autoMeetingUrl = buildOpenMeetingsRoomUrl(result.insertId);
+      if (autoMeetingUrl) {
+        await pool.query("UPDATE courses SET meeting_url = ? WHERE id = ?", [autoMeetingUrl, result.insertId]);
+      }
+    }
 
     return res.status(201).json({ id: result.insertId });
   } catch (error) {

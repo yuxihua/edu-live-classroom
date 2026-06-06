@@ -41,6 +41,7 @@ npm run dev
 ```
 
 Set `OPENMEETINGS_JOIN_SECRET` in `.env` for signed join links.
+Set `OPENMEETINGS_ROOM_BASE_URL` in `.env` to automatically generate course room links.
 
 API health: `http://localhost:3000/api/health`
 

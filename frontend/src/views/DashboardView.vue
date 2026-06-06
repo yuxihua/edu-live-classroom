@@ -15,8 +15,7 @@ const newCourse = ref({
   subject: "",
   teacherName: "",
   startTime: "",
-  endTime: "",
-  meetingUrl: ""
+  endTime: ""
 });
 
 const user = JSON.parse(localStorage.getItem("user") || "{}");
@@ -35,6 +34,7 @@ const messageMap = {
   "Failed to enroll": "报名失败",
   "Failed to delete course": "删除课程失败",
   "Failed to create course": "创建课程失败",
+  "OPENMEETINGS_ROOM_BASE_URL is not configured": "未配置 OpenMeetings 课堂链接基础地址",
   "Only admin or teacher can create course": "仅管理员或讲师可以创建课程",
   "Only students can enroll": "仅学员可以报名",
   "Invalid courseId": "课程编号无效"
@@ -104,8 +104,7 @@ const createCourse = async () => {
       subject: "",
       teacherName: "",
       startTime: "",
-      endTime: "",
-      meetingUrl: ""
+      endTime: ""
     };
     await fetchCourses();
   } catch (error) {
@@ -142,11 +141,11 @@ onMounted(fetchCourses);
         <input v-model="newCourse.teacherName" placeholder="讲师姓名" required />
         <input v-model="newCourse.startTime" type="datetime-local" required />
         <input v-model="newCourse.endTime" type="datetime-local" required />
-        <input v-model="newCourse.meetingUrl" placeholder="OpenMeetings 链接" />
         <button type="submit" :disabled="creating">
           {{ creating ? "创建中..." : "创建课程" }}
         </button>
       </form>
+      <p class="hint">OpenMeetings 课堂链接会根据系统配置自动生成。</p>
       <p v-if="createError" class="error">{{ createError }}</p>
     </section>
 
