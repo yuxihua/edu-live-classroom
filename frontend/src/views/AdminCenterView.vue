@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import http from "../api/http.js";
 
@@ -9,6 +9,8 @@ const dashboard = ref({ districts: 0, organizations: 0, users: 0, courses: 0, lo
 const districts = ref([]);
 const organizations = ref([]);
 const users = ref([]);
+const classrooms = ref([]);
+const guardianLinks = ref([]);
 const settings = ref([]);
 const permissions = ref([]);
 const logs = ref([]);
@@ -16,8 +18,16 @@ const formMessage = ref("");
 const errorText = ref("");
 const editingUserId = ref(0);
 
-const districtForm = ref({ name: "", code: "" });
-const organizationForm = ref({ name: "", code: "", category: "school", districtId: "" });
+const districtForm = ref({ name: "", code: "", organizationId: "" });
+const organizationForm = ref({ name: "", code: "", category: "school" });
+const classroomForm = ref({
+  name: "",
+  code: "",
+  organizationId: "",
+  districtId: "",
+  assistantUserId: ""
+});
+const guardianLinkForm = ref({ parentUserId: "", studentUserId: "" });
 const userForm = ref({
   fullName: "",
   email: "",
@@ -29,6 +39,7 @@ const userForm = ref({
 });
 const settingForm = ref({ key: "", value: "", category: "general" });
 const permissionForm = ref({ roleName: "teacher", permissionText: "course.manage,course.view" });
+const currentUser = JSON.parse(localStorage.getItem("user") || "{}");
 
 const roleOptions = ["admin", "org_admin", "district_admin", "teacher", "assistant", "student", "parent"];
 const categoryOptions = ["school", "center", "district", "company"];
@@ -42,6 +53,9 @@ const messageMap = {
   "Failed to fetch organizations": "加载机构失败",
   "Failed to create organization": "创建机构失败",
   "Failed to delete organization": "删除机构失败",
+  "Failed to fetch classrooms": "加载固定教室失败",
+  "Failed to create classroom": "创建固定教室失败",
+  "Failed to delete classroom": "删除固定教室失败",
   "Failed to fetch users": "加载账号失败",
   "Failed to create user": "创建账号失败",
   "Failed to update user": "更新账号失败",
@@ -50,13 +64,23 @@ const messageMap = {
   "Failed to update setting": "更新系统设置失败",
   "Failed to fetch permissions": "加载权限失败",
   "Failed to update permissions": "更新权限失败",
-    "Failed to fetch logs": "加载系统日志失败",
-    "name and code are required": "名称和编码不能为空",
-    "Invalid districtId": "学区编号无效",
-    "Invalid organizationId": "机构编号无效",
-    "Invalid userId": "账号编号无效",
-    "Invalid setting key": "设置键无效",
-    "roleName and permissions are required": "角色和权限不能为空"
+  "Failed to fetch guardian links": "加载家长学员关系失败",
+  "Failed to create guardian link": "创建家长学员关系失败",
+  "Failed to delete guardian link": "删除家长学员关系失败",
+  "Failed to fetch logs": "加载系统日志失败",
+  "name and code are required": "名称和编码不能为空",
+  "name, code and organizationId are required": "名称、编码和所属机构不能为空",
+  "name, code, organizationId and districtId are required": "名称、编码、所属机构和学区不能为空",
+  "Please select organization": "请选择所属机构",
+  "Please select district": "请选择所属学区",
+  "District not in organization": "所选学区不属于该机构",
+  "parentUserId and studentUserId are required": "家长和学员不能为空",
+  "Invalid classroomId": "固定教室编号无效",
+  "Invalid districtId": "学区编号无效",
+  "Invalid organizationId": "机构编号无效",
+  "Invalid userId": "账号编号无效",
+  "Invalid setting key": "设置键无效",
+  "roleName and permissions are required": "角色和权限不能为空"
 };
 
 const toChineseMessage = (message, fallback) => {
@@ -84,6 +108,16 @@ const fetchUsers = async () => {
   users.value = data;
 };
 
+const fetchClassrooms = async () => {
+  const { data } = await http.get("/admin/classrooms");
+  classrooms.value = data;
+};
+
+const fetchGuardianLinks = async () => {
+  const { data } = await http.get("/admin/guardian-links");
+  guardianLinks.value = data;
+};
+
 const fetchSettings = async () => {
   const { data } = await http.get("/admin/settings");
   settings.value = data;
@@ -104,13 +138,21 @@ const refreshActiveTab = async () => {
   formMessage.value = "";
   try {
     if (activeTab.value === "dashboard") await fetchDashboard();
-    if (activeTab.value === "districts") await fetchDistricts();
+    if (activeTab.value === "districts") {
+      await Promise.all([fetchOrganizations(), fetchDistricts()]);
+    }
     if (activeTab.value === "organizations") {
       await fetchDistricts();
       await fetchOrganizations();
     }
     if (activeTab.value === "users") {
       await Promise.all([fetchDistricts(), fetchOrganizations(), fetchUsers()]);
+    }
+    if (activeTab.value === "classrooms") {
+      await Promise.all([fetchOrganizations(), fetchDistricts(), fetchUsers(), fetchClassrooms()]);
+    }
+    if (activeTab.value === "guardianLinks") {
+      await Promise.all([fetchUsers(), fetchGuardianLinks()]);
     }
     if (activeTab.value === "settings") await fetchSettings();
     if (activeTab.value === "permissions") await fetchPermissions();
@@ -121,8 +163,13 @@ const refreshActiveTab = async () => {
 };
 
 const createDistrict = async () => {
+  if (!districtForm.value.organizationId) {
+    errorText.value = toChineseMessage("Please select organization", "请选择所属机构");
+    return;
+  }
+
   await http.post("/admin/districts", districtForm.value);
-  districtForm.value = { name: "", code: "" };
+  districtForm.value = { name: "", code: "", organizationId: "" };
   formMessage.value = "学区已创建";
   await fetchDistricts();
 };
@@ -134,10 +181,9 @@ const deleteDistrict = async (id) => {
 
 const createOrganization = async () => {
   await http.post("/admin/organizations", {
-    ...organizationForm.value,
-    districtId: organizationForm.value.districtId || null
+    ...organizationForm.value
   });
-  organizationForm.value = { name: "", code: "", category: "school", districtId: "" };
+  organizationForm.value = { name: "", code: "", category: "school" };
   formMessage.value = "机构已创建";
   await fetchOrganizations();
 };
@@ -147,7 +193,60 @@ const deleteOrganization = async (id) => {
   await fetchOrganizations();
 };
 
+const createClassroom = async () => {
+  if (!classroomForm.value.organizationId) {
+    errorText.value = toChineseMessage("Please select organization", "请选择所属机构");
+    return;
+  }
+
+  if (!classroomForm.value.districtId) {
+    errorText.value = toChineseMessage("Please select district", "请选择所属学区");
+    return;
+  }
+
+  const inSelectedOrganization = districtOptionsByOrganization(classroomForm.value.organizationId)
+    .some((item) => Number(item.id) === Number(classroomForm.value.districtId));
+
+  if (!inSelectedOrganization) {
+    errorText.value = toChineseMessage("District not in organization", "所选学区不属于该机构");
+    return;
+  }
+
+  await http.post("/admin/classrooms", {
+    ...classroomForm.value,
+    assistantUserId: classroomForm.value.assistantUserId || null
+  });
+  classroomForm.value = {
+    name: "",
+    code: "",
+    organizationId: "",
+    districtId: "",
+    assistantUserId: ""
+  };
+  formMessage.value = "固定教室已创建";
+  await fetchClassrooms();
+};
+
+const deleteClassroom = async (id) => {
+  await http.delete(`/admin/classrooms/${id}`);
+  await fetchClassrooms();
+};
+
 const createUser = async () => {
+  if (currentUser.role === "org_admin") {
+    userForm.value.organizationId = String(myOrganizationId.value || "");
+  }
+
+  if (currentUser.role === "district_admin") {
+    userForm.value.organizationId = String(myOrganizationId.value || "");
+    userForm.value.districtId = String(myDistrictId.value || "");
+  }
+
+  if (userForm.value.districtId && !userForm.value.organizationId) {
+    errorText.value = toChineseMessage("Please select organization", "请选择所属机构");
+    return;
+  }
+
   if (editingUserId.value > 0) {
     await http.put(`/admin/users/${editingUserId.value}`, {
       ...userForm.value,
@@ -178,6 +277,16 @@ const createUser = async () => {
 };
 
 const startEditUser = (item) => {
+  if (currentUser.role === "district_admin" && Number(item.district_id || 0) !== myDistrictId.value) {
+    errorText.value = "不能编辑本学区之外的账号";
+    return;
+  }
+
+  if (currentUser.role === "org_admin" && Number(item.organization_id || 0) !== myOrganizationId.value) {
+    errorText.value = "不能编辑本机构之外的账号";
+    return;
+  }
+
   editingUserId.value = item.id;
   userForm.value = {
     fullName: item.full_name,
@@ -205,9 +314,120 @@ const cancelEditUser = () => {
 };
 
 const deleteUser = async (id) => {
+  const target = users.value.find((item) => Number(item.id) === Number(id));
+  if (currentUser.role === "district_admin" && Number(target?.district_id || 0) !== myDistrictId.value) {
+    errorText.value = "不能删除本学区之外的账号";
+    return;
+  }
+
+  if (currentUser.role === "org_admin" && Number(target?.organization_id || 0) !== myOrganizationId.value) {
+    errorText.value = "不能删除本机构之外的账号";
+    return;
+  }
+
   await http.delete(`/admin/users/${id}`);
   await fetchUsers();
 };
+
+const createGuardianLink = async () => {
+  await http.post("/admin/guardian-links", guardianLinkForm.value);
+  guardianLinkForm.value = { parentUserId: "", studentUserId: "" };
+  formMessage.value = "家长学员关系已创建";
+  await fetchGuardianLinks();
+};
+
+const deleteGuardianLink = async (id) => {
+  await http.delete(`/admin/guardian-links/${id}`);
+  await fetchGuardianLinks();
+};
+
+const districtOptionsByOrganization = (organizationId) => {
+  if (!organizationId) return [];
+  return districts.value.filter((item) => Number(item.organization_id) === Number(organizationId));
+};
+
+const myOrganizationId = computed(() => {
+  const direct = Number(currentUser.organizationId || 0);
+  if (direct > 0) return direct;
+  if (currentUser.role !== "district_admin") return 0;
+  const district = districts.value.find((item) => Number(item.id) === Number(currentUser.districtId || 0));
+  return Number(district?.organization_id || 0);
+});
+
+const myDistrictId = computed(() => Number(currentUser.districtId || 0));
+
+const scopedOrganizations = computed(() => {
+  if (currentUser.role === "admin") return organizations.value;
+  if (["org_admin", "district_admin"].includes(currentUser.role) && myOrganizationId.value > 0) {
+    return organizations.value.filter((item) => Number(item.id) === myOrganizationId.value);
+  }
+  return organizations.value;
+});
+
+const scopedDistricts = computed(() => {
+  if (currentUser.role === "admin") return districts.value;
+  if (currentUser.role === "district_admin" && myDistrictId.value > 0) {
+    return districts.value.filter((item) => Number(item.id) === myDistrictId.value);
+  }
+  if (currentUser.role === "org_admin" && myOrganizationId.value > 0) {
+    return districts.value.filter((item) => Number(item.organization_id) === myOrganizationId.value);
+  }
+  return districts.value;
+});
+
+const scopedRoleOptions = computed(() => {
+  if (currentUser.role === "admin") return roleOptions;
+  if (currentUser.role === "org_admin") {
+    return ["district_admin", "teacher", "assistant", "student", "parent"];
+  }
+  if (currentUser.role === "district_admin") {
+    return ["teacher", "assistant", "student", "parent"];
+  }
+  return ["teacher", "assistant", "student", "parent"];
+});
+
+const visibleUsers = computed(() => {
+  if (currentUser.role === "admin") return users.value;
+  if (currentUser.role === "district_admin" && myDistrictId.value > 0) {
+    return users.value.filter((item) => Number(item.district_id) === myDistrictId.value);
+  }
+  if (currentUser.role === "org_admin" && myOrganizationId.value > 0) {
+    return users.value.filter((item) => Number(item.organization_id) === myOrganizationId.value);
+  }
+  return users.value;
+});
+
+const scopedDistrictOptionsByOrganization = (organizationId) => {
+  const orgId = Number(organizationId || 0);
+  const base = scopedDistricts.value;
+  if (!orgId) return base;
+  return base.filter((item) => Number(item.organization_id) === orgId);
+};
+
+const classroomDistrictOptions = computed(() => scopedDistrictOptionsByOrganization(classroomForm.value.organizationId));
+const userDistrictOptions = computed(() => scopedDistrictOptionsByOrganization(userForm.value.organizationId));
+
+watch(
+  () => classroomForm.value.organizationId,
+  (value, oldValue) => {
+    if (value !== oldValue) {
+      classroomForm.value.districtId = "";
+    }
+  }
+);
+
+watch(
+  () => userForm.value.organizationId,
+  (value, oldValue) => {
+    if (value !== oldValue) {
+      userForm.value.districtId = "";
+    }
+  }
+);
+
+const assistantUsers = () => users.value.filter((item) => item.role === "assistant");
+const parentUsers = () => users.value.filter((item) => item.role === "parent");
+const studentUsers = () => users.value.filter((item) => item.role === "student");
 
 const updateSetting = async () => {
   await http.put(`/admin/settings/${encodeURIComponent(settingForm.value.key)}`, {
@@ -241,6 +461,23 @@ const logout = () => {
 };
 
 onMounted(refreshActiveTab);
+onMounted(async () => {
+  await Promise.all([fetchOrganizations(), fetchDistricts()]);
+
+  if (currentUser.role === "org_admin") {
+    districtForm.value.organizationId = String(myOrganizationId.value || "");
+    classroomForm.value.organizationId = String(myOrganizationId.value || "");
+    userForm.value.organizationId = String(myOrganizationId.value || "");
+  }
+
+  if (currentUser.role === "district_admin") {
+    districtForm.value.organizationId = String(myOrganizationId.value || "");
+    classroomForm.value.organizationId = String(myOrganizationId.value || "");
+    classroomForm.value.districtId = String(myDistrictId.value || "");
+    userForm.value.organizationId = String(myOrganizationId.value || "");
+    userForm.value.districtId = String(myDistrictId.value || "");
+  }
+});
 </script>
 
 <template>
@@ -248,7 +485,7 @@ onMounted(refreshActiveTab);
     <header class="topbar">
       <div>
         <h1>管理中心</h1>
-        <p>系统帐号管理、权限管理、系统日志、机构设置、学区管理、老师管理、课程管理</p>
+        <p>系统帐号管理、权限管理、系统日志、机构设置、学区管理、固定教室管理、家长学员关系管理</p>
       </div>
       <div class="actions">
         <button class="ghost" @click="router.push('/dashboard')">返回课程管理</button>
@@ -257,8 +494,8 @@ onMounted(refreshActiveTab);
     </header>
 
     <nav class="tabs">
-      <button v-for="tab in ['dashboard','districts','organizations','users','settings','permissions','logs']" :key="tab" :class="['tab', { active: activeTab === tab }]" @click="activeTab = tab; refreshActiveTab()">
-        {{ { dashboard: '概览', districts: '学区管理', organizations: '机构设置', users: '系统帐号', settings: '系统设置', permissions: '权限管理', logs: '系统日志' }[tab] }}
+      <button v-for="tab in ['dashboard','organizations','districts','classrooms','users','guardianLinks','settings','permissions','logs']" :key="tab" :class="['tab', { active: activeTab === tab }]" @click="activeTab = tab; refreshActiveTab()">
+        {{ { dashboard: '概览', organizations: '机构设置', districts: '学区管理', classrooms: '固定教室', users: '系统帐号', guardianLinks: '家长学员关系', settings: '系统设置', permissions: '权限管理', logs: '系统日志' }[tab] }}
       </button>
     </nav>
 
@@ -281,13 +518,17 @@ onMounted(refreshActiveTab);
     <section v-else-if="activeTab === 'districts'" class="card">
       <h2>学区管理</h2>
       <form class="form" @submit.prevent="createDistrict">
+        <select v-model="districtForm.organizationId" required>
+          <option value="">选择所属机构</option>
+          <option v-for="item in scopedOrganizations" :key="item.id" :value="item.id">{{ item.name }}</option>
+        </select>
         <input v-model="districtForm.name" placeholder="学区名称" required />
         <input v-model="districtForm.code" placeholder="学区编码" required />
         <button type="submit">创建学区</button>
       </form>
       <ul class="list">
         <li v-for="item in districts" :key="item.id">
-          <span>{{ item.name }} / {{ item.code }}</span>
+          <span>{{ item.name }} / {{ item.code }} / {{ item.organization_name || '未绑定机构' }}</span>
           <button class="danger" @click="deleteDistrict(item.id)">删除</button>
         </li>
       </ul>
@@ -301,15 +542,11 @@ onMounted(refreshActiveTab);
         <select v-model="organizationForm.category">
           <option v-for="item in categoryOptions" :key="item" :value="item">{{ item }}</option>
         </select>
-        <select v-model="organizationForm.districtId">
-          <option value="">选择所属学区</option>
-          <option v-for="item in districts" :key="item.id" :value="item.id">{{ item.name }}</option>
-        </select>
         <button type="submit">创建机构</button>
       </form>
       <ul class="list">
         <li v-for="item in organizations" :key="item.id">
-          <span>{{ item.name }} / {{ item.code }} / {{ item.category }} / {{ item.district_name || '未分配学区' }}</span>
+          <span>{{ item.name }} / {{ item.code }} / {{ item.category }} / 学区数量: {{ item.district_count || 0 }}</span>
           <button class="danger" @click="deleteOrganization(item.id)">删除</button>
         </li>
       </ul>
@@ -322,15 +559,15 @@ onMounted(refreshActiveTab);
         <input v-model="userForm.email" placeholder="邮箱" required />
         <input v-model="userForm.password" :placeholder="editingUserId ? '新密码（不改可留空）' : '初始密码'" type="password" :required="!editingUserId" />
         <select v-model="userForm.role">
-          <option v-for="item in roleOptions" :key="item" :value="item">{{ item }}</option>
+          <option v-for="item in scopedRoleOptions" :key="item" :value="item">{{ item }}</option>
         </select>
         <select v-model="userForm.organizationId">
           <option value="">选择机构</option>
-          <option v-for="item in organizations" :key="item.id" :value="item.id">{{ item.name }}</option>
+          <option v-for="item in scopedOrganizations" :key="item.id" :value="item.id">{{ item.name }}</option>
         </select>
         <select v-model="userForm.districtId">
           <option value="">选择学区</option>
-          <option v-for="item in districts" :key="item.id" :value="item.id">{{ item.name }}</option>
+          <option v-for="item in userDistrictOptions" :key="item.id" :value="item.id">{{ item.name }}</option>
         </select>
         <select v-model="userForm.status">
           <option value="active">启用</option>
@@ -340,12 +577,60 @@ onMounted(refreshActiveTab);
         <button v-if="editingUserId" type="button" class="ghost" @click="cancelEditUser">取消编辑</button>
       </form>
       <ul class="list">
-        <li v-for="item in users" :key="item.id">
+        <li v-for="item in visibleUsers" :key="item.id">
           <span>{{ item.full_name }} / {{ item.email }} / {{ item.role }} / {{ item.status }}</span>
           <div class="inline-actions">
             <button class="ghost" @click="startEditUser(item)">编辑</button>
             <button class="danger" @click="deleteUser(item.id)">删除</button>
           </div>
+        </li>
+      </ul>
+    </section>
+
+    <section v-else-if="activeTab === 'classrooms'" class="card">
+      <h2>固定教室管理</h2>
+      <form class="form" @submit.prevent="createClassroom">
+        <select v-model="classroomForm.organizationId" required>
+          <option value="">选择所属机构</option>
+          <option v-for="item in scopedOrganizations" :key="item.id" :value="item.id">{{ item.name }}</option>
+        </select>
+        <select v-model="classroomForm.districtId" required>
+          <option value="">选择所属学区</option>
+          <option v-for="item in classroomDistrictOptions" :key="item.id" :value="item.id">{{ item.name }}</option>
+        </select>
+        <input v-model="classroomForm.name" placeholder="固定教室名称" required />
+        <input v-model="classroomForm.code" placeholder="固定教室编码" required />
+        <select v-model="classroomForm.assistantUserId">
+          <option value="">选择助教（可选）</option>
+          <option v-for="item in assistantUsers()" :key="item.id" :value="item.id">{{ item.full_name }} / {{ item.email }}</option>
+        </select>
+        <button type="submit">创建固定教室</button>
+      </form>
+      <ul class="list">
+        <li v-for="item in classrooms" :key="item.id">
+          <span>{{ item.name }} / {{ item.code }} / {{ item.organization_name || '-' }} / {{ item.district_name || '-' }} / 助教: {{ item.assistant_name || '未绑定' }}</span>
+          <button class="danger" @click="deleteClassroom(item.id)">删除</button>
+        </li>
+      </ul>
+    </section>
+
+    <section v-else-if="activeTab === 'guardianLinks'" class="card">
+      <h2>家长学员关系管理</h2>
+      <form class="form" @submit.prevent="createGuardianLink">
+        <select v-model="guardianLinkForm.parentUserId" required>
+          <option value="">选择家长</option>
+          <option v-for="item in parentUsers()" :key="item.id" :value="item.id">{{ item.full_name }} / {{ item.email }}</option>
+        </select>
+        <select v-model="guardianLinkForm.studentUserId" required>
+          <option value="">选择学员</option>
+          <option v-for="item in studentUsers()" :key="item.id" :value="item.id">{{ item.full_name }} / {{ item.email }}</option>
+        </select>
+        <button type="submit">创建关系</button>
+      </form>
+      <ul class="list">
+        <li v-for="item in guardianLinks" :key="item.id">
+          <span>{{ item.parent_name || '-' }} (家长) -> {{ item.student_name || '-' }} (学员)</span>
+          <button class="danger" @click="deleteGuardianLink(item.id)">删除</button>
         </li>
       </ul>
     </section>

@@ -2,6 +2,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import pool from "../config/db.js";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -76,6 +77,46 @@ router.post("/login", async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ message: "Login failed" });
+  }
+});
+
+router.get("/me", requireAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT id, full_name, email, role, organization_id, district_id, status FROM users WHERE id = ? LIMIT 1",
+      [req.user.userId]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const user = rows[0];
+    const response = {
+      id: user.id,
+      fullName: user.full_name,
+      email: user.email,
+      role: user.role,
+      organizationId: user.organization_id || null,
+      districtId: user.district_id || null,
+      status: user.status || "active"
+    };
+
+    if (user.role === "parent") {
+      const [links] = await pool.query(
+        `SELECT gl.student_user_id, s.full_name AS student_name, s.email AS student_email
+         FROM guardian_student_links gl
+         LEFT JOIN users s ON s.id = gl.student_user_id
+         WHERE gl.parent_user_id = ?
+         ORDER BY gl.id DESC`,
+        [user.id]
+      );
+      response.linkedStudents = links;
+    }
+
+    return res.json(response);
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to load profile" });
   }
 });
 

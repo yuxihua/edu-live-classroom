@@ -1,27 +1,40 @@
 <script setup>
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import http from "../api/http.js";
 
 const router = useRouter();
 const courses = ref([]);
+const organizations = ref([]);
+const districts = ref([]);
+const classrooms = ref([]);
 const loading = ref(false);
 const errorText = ref("");
 const keyword = ref("");
 const creating = ref(false);
 const createError = ref("");
 const newCourse = ref({
+  organizationId: "",
+  districtId: "",
+  classroomId: "",
   title: "",
   subject: "",
   teacherName: "",
   assistantName: "",
+  priceCents: 0,
   startTime: "",
   endTime: ""
 });
+const selectedRoomIdByCourse = ref({});
+const liveRoomsByCourse = ref({});
+const purchaseStudentId = ref("");
+const me = ref({});
 
 const user = JSON.parse(localStorage.getItem("user") || "{}");
 const canCreateCourse = ["admin", "org_admin", "district_admin", "teacher"].includes(user.role);
+const canSelectScope = ["admin", "org_admin", "district_admin"].includes(user.role);
 const isStudent = user.role === "student";
+const isParent = user.role === "parent";
 const deletingId = ref(0);
 
 const roleLabelMap = {
@@ -37,15 +50,25 @@ const roleLabelMap = {
 const messageMap = {
   "Failed to load courses": "加载课程失败",
   "Failed to enroll": "报名失败",
+  "Failed to purchase course": "购买课程失败",
   "Failed to delete course": "删除课程失败",
   "Failed to create course": "创建课程失败",
+  "Failed to fetch live rooms": "加载直播间失败",
+  "Failed to create live room": "创建直播间失败",
   "OPENMEETINGS_ROOM_BASE_URL is not configured": "未配置 OpenMeetings 课堂链接基础地址",
   "Only admin, organization admin, district admin or teacher can create course": "仅系统管理员、机构管理员、学区管理员或讲师可以创建课程",
   "Only admin, organization admin, district admin or teacher can update course": "仅系统管理员、机构管理员、学区管理员或讲师可以更新课程",
   "Only admin, organization admin, district admin or teacher can delete course": "仅系统管理员、机构管理员、学区管理员或讲师可以删除课程",
   "Only admin, organization admin, district admin or teacher can view summary": "仅系统管理员、机构管理员、学区管理员或讲师可以查看汇总",
   "Only admin, organization admin, district admin or teacher can add replay": "仅系统管理员、机构管理员、学区管理员或讲师可以添加回放",
+  "Only students or parents can purchase": "仅学员或家长可以购买课程",
+  "studentUserId is required": "家长购买时必须选择学员",
+  "Parent not linked to this student": "家长未绑定该学员",
   "Only students can enroll": "仅学员可以报名",
+  "Please select linked student": "请先选择购买学员",
+  "Please select organization": "请选择所属机构",
+  "Please select district": "请选择所属学区",
+  "Please select classroom": "请选择固定教室",
   "Invalid courseId": "课程编号无效"
 };
 
@@ -58,6 +81,67 @@ const toChineseMessage = (message, fallback) => {
 
 const roleText = roleLabelMap[user.role] || user.role || "未知角色";
 const canOpenAdminCenter = ["admin", "org_admin", "district_admin"].includes(user.role);
+
+const fetchProfile = async () => {
+  const { data } = await http.get("/auth/me");
+  me.value = data;
+  if (data.role === "parent" && data.linkedStudents?.length) {
+    purchaseStudentId.value = String(data.linkedStudents[0].student_user_id);
+  }
+};
+
+const fetchOrganizations = async () => {
+  const { data } = await http.get("/admin/organizations");
+  organizations.value = data;
+};
+
+const fetchDistricts = async () => {
+  const { data } = await http.get("/admin/districts");
+  districts.value = data;
+};
+
+const fetchClassrooms = async () => {
+  const { data } = await http.get("/admin/classrooms");
+  classrooms.value = data;
+};
+
+const districtOptionsByOrganization = (organizationId) => {
+  if (!organizationId) return [];
+  return districts.value.filter((item) => Number(item.organization_id) === Number(organizationId));
+};
+
+const districtOptions = computed(() => districtOptionsByOrganization(newCourse.value.organizationId));
+
+const classroomOptionsByScope = () => {
+  const orgId = newCourse.value.organizationId;
+  const districtId = newCourse.value.districtId;
+  return classrooms.value.filter((item) => {
+    const orgOk = !orgId || Number(item.organization_id) === Number(orgId);
+    const districtOk = !districtId || Number(item.district_id) === Number(districtId);
+    return orgOk && districtOk;
+  });
+};
+
+const classroomOptions = computed(() => classroomOptionsByScope());
+
+watch(
+  () => newCourse.value.organizationId,
+  (value, oldValue) => {
+    if (value !== oldValue) {
+      newCourse.value.districtId = "";
+      newCourse.value.classroomId = "";
+    }
+  }
+);
+
+watch(
+  () => newCourse.value.districtId,
+  (value, oldValue) => {
+    if (value !== oldValue) {
+      newCourse.value.classroomId = "";
+    }
+  }
+);
 
 const fetchCourses = async () => {
   loading.value = true;
@@ -78,12 +162,68 @@ const fetchCourses = async () => {
 
 const goClassroom = (id) => router.push(`/classroom/${id}`);
 
+const fetchLiveRooms = async (courseId) => {
+  try {
+    const { data } = await http.get(`/courses/${courseId}/live-rooms`);
+    liveRoomsByCourse.value = {
+      ...liveRoomsByCourse.value,
+      [courseId]: data
+    };
+    if (!selectedRoomIdByCourse.value[courseId] && data.length > 0) {
+      selectedRoomIdByCourse.value[courseId] = data[0].id;
+    }
+  } catch (error) {
+    errorText.value = toChineseMessage(error.response?.data?.message, "加载直播间失败");
+  }
+};
+
+const createLiveRoom = async (courseId) => {
+  const name = window.prompt("请输入直播间名称");
+  const meetingUrl = window.prompt("请输入直播间链接");
+  if (!name || !meetingUrl) return;
+  try {
+    await http.post(`/courses/${courseId}/live-rooms`, { name, meetingUrl });
+    await fetchLiveRooms(courseId);
+  } catch (error) {
+    errorText.value = toChineseMessage(error.response?.data?.message, "创建直播间失败");
+  }
+};
+
+const joinRoom = async (courseId) => {
+  try {
+    const roomId = selectedRoomIdByCourse.value[courseId] || "";
+    const link = await http.get(`/classroom/${courseId}/join-link`, {
+      params: roomId ? { roomId } : {}
+    });
+    window.open(link.data.joinUrl, "_blank");
+  } catch (error) {
+    errorText.value = toChineseMessage(error.response?.data?.message, "进入课堂失败");
+  }
+};
+
 const enrollCourse = async (id) => {
   try {
     await http.post(`/courses/${id}/enroll`);
     await fetchCourses();
   } catch (error) {
     errorText.value = toChineseMessage(error.response?.data?.message, "报名失败");
+  }
+};
+
+const purchaseCourse = async (id) => {
+  try {
+    if (user.role === "parent" && !purchaseStudentId.value) {
+      errorText.value = toChineseMessage("Please select linked student", "请先选择购买学员");
+      return;
+    }
+
+    const payload = user.role === "parent"
+      ? { studentUserId: Number(purchaseStudentId.value || 0) }
+      : {};
+    await http.post(`/courses/${id}/purchase`, payload);
+    await fetchCourses();
+  } catch (error) {
+    errorText.value = toChineseMessage(error.response?.data?.message, "购买课程失败");
   }
 };
 
@@ -104,16 +244,39 @@ const createCourse = async () => {
   creating.value = true;
   createError.value = "";
   try {
+    if (canSelectScope && !newCourse.value.organizationId) {
+      createError.value = toChineseMessage("Please select organization", "请选择所属机构");
+      return;
+    }
+
+    if (canSelectScope && !newCourse.value.districtId) {
+      createError.value = toChineseMessage("Please select district", "请选择所属学区");
+      return;
+    }
+
+    if (canSelectScope && !newCourse.value.classroomId) {
+      createError.value = toChineseMessage("Please select classroom", "请选择固定教室");
+      return;
+    }
+
     await http.post("/courses", {
       ...newCourse.value,
+      organizationId: canSelectScope ? (newCourse.value.organizationId || null) : null,
+      districtId: canSelectScope ? (newCourse.value.districtId || null) : null,
+      classroomId: canSelectScope ? (newCourse.value.classroomId || null) : null,
+      priceCents: Number(newCourse.value.priceCents || 0),
       startTime: newCourse.value.startTime.replace("T", " ") + ":00",
       endTime: newCourse.value.endTime.replace("T", " ") + ":00"
     });
     newCourse.value = {
+      organizationId: "",
+      districtId: "",
+      classroomId: "",
       title: "",
       subject: "",
       teacherName: "",
       assistantName: "",
+      priceCents: 0,
       startTime: "",
       endTime: ""
     };
@@ -132,6 +295,14 @@ const logout = () => {
 };
 
 onMounted(fetchCourses);
+onMounted(async () => {
+  await fetchProfile();
+  if (canSelectScope) {
+    await fetchOrganizations();
+    await fetchDistricts();
+    await fetchClassrooms();
+  }
+});
 </script>
 
 <template>
@@ -150,10 +321,23 @@ onMounted(fetchCourses);
     <section class="panel" v-if="canCreateCourse">
       <h2>创建课程</h2>
       <form class="create-form" @submit.prevent="createCourse">
+        <select v-if="canSelectScope" v-model="newCourse.organizationId" required>
+          <option value="">选择所属机构</option>
+          <option v-for="item in organizations" :key="item.id" :value="item.id">{{ item.name }}</option>
+        </select>
+        <select v-if="canSelectScope" v-model="newCourse.districtId" required>
+          <option value="">选择所属学区</option>
+          <option v-for="item in districtOptions" :key="item.id" :value="item.id">{{ item.name }}</option>
+        </select>
+        <select v-if="canSelectScope" v-model="newCourse.classroomId" required>
+          <option value="">选择固定教室</option>
+          <option v-for="item in classroomOptions" :key="item.id" :value="item.id">{{ item.name }} / {{ item.code }}</option>
+        </select>
         <input v-model="newCourse.title" placeholder="课程标题" required />
         <input v-model="newCourse.subject" placeholder="学科" />
         <input v-model="newCourse.teacherName" placeholder="讲师姓名" required />
         <input v-model="newCourse.assistantName" placeholder="固定教室助教（可选）" />
+        <input v-model="newCourse.priceCents" type="number" min="0" placeholder="课程价格（分）" />
         <input v-model="newCourse.startTime" type="datetime-local" required />
         <input v-model="newCourse.endTime" type="datetime-local" required />
         <button type="submit" :disabled="creating">
@@ -170,6 +354,14 @@ onMounted(fetchCourses);
         <input v-model="keyword" placeholder="搜索课程标题或学科" />
         <button @click="fetchCourses">搜索</button>
       </div>
+      <div v-if="isParent" class="toolbar">
+        <select v-model="purchaseStudentId">
+          <option value="">请选择购买学员</option>
+          <option v-for="item in me.linkedStudents || []" :key="item.student_user_id" :value="item.student_user_id">
+            {{ item.student_name }} / {{ item.student_email }}
+          </option>
+        </select>
+      </div>
       <p v-if="loading">课程加载中...</p>
       <p v-else-if="errorText" class="error">{{ errorText }}</p>
       <ul v-else class="course-list">
@@ -177,13 +369,19 @@ onMounted(fetchCourses);
           <div>
             <strong>{{ course.title }}</strong>
             <p>{{ course.teacher_name }} | {{ course.subject || "通用" }}</p>
+            <p v-if="course.classroom_id">固定教室：{{ course.classroom_name || '已绑定教室' }}（{{ course.classroom_code || '-' }}）</p>
             <p v-if="course.assistant_name">助教：{{ course.assistant_name }}</p>
+            <p>价格：{{ (course.price_cents || 0) / 100 }} 元</p>
             <small>{{ course.start_time }} - {{ course.end_time }}</small>
             <small v-if="isStudent">{{ course.enrolled ? "已报名" : "未报名" }}</small>
           </div>
           <div class="actions">
             <button @click="goClassroom(course.id)">进入课堂</button>
+            <button v-if="(user.role === 'student' || user.role === 'parent') && !course.enrolled" @click="purchaseCourse(course.id)">购买课程</button>
             <button v-if="isStudent && !course.enrolled" @click="enrollCourse(course.id)">报名</button>
+            <button @click="fetchLiveRooms(course.id)">查看直播间</button>
+            <button v-if="canCreateCourse" @click="createLiveRoom(course.id)">新增直播间</button>
+            <button @click="joinRoom(course.id)">进入直播间</button>
             <button
               v-if="canCreateCourse"
               :disabled="deletingId === course.id"
@@ -191,6 +389,16 @@ onMounted(fetchCourses);
             >
               {{ deletingId === course.id ? "删除中..." : "删除" }}
             </button>
+          </div>
+          <div v-if="liveRoomsByCourse[course.id]?.length" class="room-list">
+            <strong>直播间列表</strong>
+            <div v-for="room in liveRoomsByCourse[course.id]" :key="room.id" class="room-item">
+              <label>
+                <input type="radio" :name="`room-${course.id}`" :value="room.id" v-model="selectedRoomIdByCourse[course.id]" />
+                {{ room.name }}
+              </label>
+              <a :href="room.meeting_url" target="_blank">打开链接</a>
+            </div>
           </div>
         </li>
       </ul>
@@ -239,6 +447,13 @@ input {
   padding: 8px 10px;
 }
 
+select {
+  font: inherit;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
 .course-list {
   margin: 0;
   padding: 0;
@@ -265,6 +480,20 @@ input {
 .actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.room-list {
+  margin-top: 10px;
+  border-top: 1px dashed #e5e7eb;
+  padding-top: 10px;
+}
+
+.room-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 button {

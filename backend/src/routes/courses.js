@@ -103,6 +103,7 @@ router.get("/", requireAuth, async (req, res) => {
          c.id,
          c.organization_id,
          c.district_id,
+         c.classroom_id,
          c.title,
          c.subject,
          c.teacher_name,
@@ -110,12 +111,16 @@ router.get("/", requireAuth, async (req, res) => {
          c.start_time,
          c.end_time,
          c.meeting_url,
+         c.price_cents,
+         fc.name AS classroom_name,
+         fc.code AS classroom_code,
          c.created_at,
          EXISTS(
            SELECT 1 FROM course_enrollments ce
            WHERE ce.course_id = c.id AND ce.user_id = ?
          ) AS enrolled
        FROM courses c
+       LEFT JOIN fixed_classrooms fc ON fc.id = c.classroom_id
        WHERE (? = '' OR c.title LIKE CONCAT('%', ?, '%') OR c.subject LIKE CONCAT('%', ?, '%'))
          ${scope.clause}
        ORDER BY c.start_time DESC`,
@@ -144,7 +149,22 @@ router.post("/", requireAuth, async (req, res) => {
     });
   }
 
+  const requestedOrganizationId = req.body.organizationId ? Number(req.body.organizationId) : null;
+  const requestedDistrictId = req.body.districtId ? Number(req.body.districtId) : null;
   const owner = resolveCourseOwner(req);
+
+  if (req.user.role === "admin") {
+    owner.organizationId = Number.isInteger(requestedOrganizationId) ? requestedOrganizationId : null;
+    owner.districtId = Number.isInteger(requestedDistrictId) ? requestedDistrictId : null;
+  }
+
+  if (req.user.role === "org_admin" && Number.isInteger(requestedOrganizationId) && requestedOrganizationId !== Number(req.user.organizationId || 0)) {
+    return res.status(403).json({ message: "Classroom not found in scope" });
+  }
+
+  if (req.user.role === "district_admin" && Number.isInteger(requestedDistrictId) && requestedDistrictId !== Number(req.user.districtId || 0)) {
+    return res.status(403).json({ message: "Classroom not found in scope" });
+  }
 
   try {
     const classroomAllowed = await ensureClassroomScope(req, classroomId ? Number(classroomId) : null);
@@ -187,6 +207,23 @@ router.put("/:id", requireAuth, async (req, res) => {
     return res.status(400).json({ message: "Missing required fields" });
   }
 
+  const requestedOrganizationId = req.body.organizationId ? Number(req.body.organizationId) : null;
+  const requestedDistrictId = req.body.districtId ? Number(req.body.districtId) : null;
+  const owner = resolveCourseOwner(req);
+
+  if (req.user.role === "admin") {
+    owner.organizationId = Number.isInteger(requestedOrganizationId) ? requestedOrganizationId : null;
+    owner.districtId = Number.isInteger(requestedDistrictId) ? requestedDistrictId : null;
+  }
+
+  if (req.user.role === "org_admin" && Number.isInteger(requestedOrganizationId) && requestedOrganizationId !== Number(req.user.organizationId || 0)) {
+    return res.status(403).json({ message: "Classroom not found in scope" });
+  }
+
+  if (req.user.role === "district_admin" && Number.isInteger(requestedDistrictId) && requestedDistrictId !== Number(req.user.districtId || 0)) {
+    return res.status(403).json({ message: "Classroom not found in scope" });
+  }
+
   try {
     const inScope = await ensureCourseScope(req, courseId);
     if (!inScope) {
@@ -199,8 +236,8 @@ router.put("/:id", requireAuth, async (req, res) => {
     }
 
     const [result] = await pool.query(
-      "UPDATE courses SET classroom_id = ?, title = ?, subject = ?, teacher_name = ?, assistant_name = ?, start_time = ?, end_time = ?, meeting_url = ?, price_cents = ? WHERE id = ?",
-      [classroomId || null, title, subject || null, teacherName, assistantName || null, startTime, endTime, meetingUrl || null, Number(priceCents || 0), courseId]
+      "UPDATE courses SET organization_id = ?, district_id = ?, classroom_id = ?, title = ?, subject = ?, teacher_name = ?, assistant_name = ?, start_time = ?, end_time = ?, meeting_url = ?, price_cents = ? WHERE id = ?",
+      [owner.organizationId, owner.districtId, classroomId || null, title, subject || null, teacherName, assistantName || null, startTime, endTime, meetingUrl || null, Number(priceCents || 0), courseId]
     );
 
     if (result.affectedRows === 0) {

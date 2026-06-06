@@ -10,6 +10,109 @@ function canManage(req) {
   return MANAGE_ROLES.includes(req.user?.role);
 }
 
+function canAssignRole(actorRole, targetRole) {
+  if (actorRole === "admin") return true;
+  if (actorRole === "org_admin") {
+    return ["district_admin", "teacher", "assistant", "student", "parent"].includes(targetRole);
+  }
+  if (actorRole === "district_admin") {
+    return ["teacher", "assistant", "student", "parent"].includes(targetRole);
+  }
+  return false;
+}
+
+async function resolveManageScope(req) {
+  if (req.user?.role === "admin") {
+    return { role: "admin", organizationId: null, districtId: null };
+  }
+
+  if (req.user?.role === "org_admin") {
+    const organizationId = Number(req.user.organizationId || 0);
+    if (organizationId <= 0) return null;
+    return { role: "org_admin", organizationId, districtId: null };
+  }
+
+  if (req.user?.role === "district_admin") {
+    const districtId = Number(req.user.districtId || 0);
+    if (districtId <= 0) return null;
+
+    let organizationId = Number(req.user.organizationId || 0);
+    if (organizationId <= 0) {
+      const [rows] = await pool.query("SELECT organization_id FROM districts WHERE id = ? LIMIT 1", [districtId]);
+      if (rows.length === 0) return null;
+      organizationId = Number(rows[0].organization_id || 0);
+    }
+
+    if (organizationId <= 0) return null;
+    return { role: "district_admin", organizationId, districtId };
+  }
+
+  return null;
+}
+
+function buildEntityScope(scope, orgColumn, districtColumn) {
+  if (!scope || scope.role === "admin") {
+    return { clause: "", params: [] };
+  }
+
+  if (scope.role === "district_admin") {
+    return { clause: ` AND ${districtColumn} = ?`, params: [scope.districtId] };
+  }
+
+  return { clause: ` AND ${orgColumn} = ?`, params: [scope.organizationId] };
+}
+
+function buildOrganizationScope(scope, orgColumn) {
+  if (!scope || scope.role === "admin") {
+    return { clause: "", params: [] };
+  }
+  return { clause: ` AND ${orgColumn} = ?`, params: [scope.organizationId] };
+}
+
+function buildDualUserScope(scope, leftAlias, rightAlias) {
+  if (!scope || scope.role === "admin") {
+    return { clause: "", params: [] };
+  }
+
+  if (scope.role === "district_admin") {
+    return {
+      clause: ` AND ${leftAlias}.district_id = ? AND ${rightAlias}.district_id = ?`,
+      params: [scope.districtId, scope.districtId]
+    };
+  }
+
+  return {
+    clause: ` AND ${leftAlias}.organization_id = ? AND ${rightAlias}.organization_id = ?`,
+    params: [scope.organizationId, scope.organizationId]
+  };
+}
+
+async function isOrganizationAllowed(scope, organizationId) {
+  if (!organizationId) return true;
+  if (scope.role === "admin") return true;
+  return Number(organizationId) === Number(scope.organizationId);
+}
+
+async function isDistrictAllowed(scope, districtId) {
+  if (!districtId) return true;
+
+  const [rows] = await pool.query("SELECT id, organization_id FROM districts WHERE id = ? LIMIT 1", [districtId]);
+  if (rows.length === 0) return false;
+
+  if (scope.role === "admin") return true;
+  if (scope.role === "org_admin") return Number(rows[0].organization_id || 0) === Number(scope.organizationId);
+  return Number(rows[0].id || 0) === Number(scope.districtId);
+}
+
+async function isUserAllowed(scope, userId) {
+  const [rows] = await pool.query("SELECT id, organization_id, district_id FROM users WHERE id = ? LIMIT 1", [userId]);
+  if (rows.length === 0) return false;
+
+  if (scope.role === "admin") return true;
+  if (scope.role === "org_admin") return Number(rows[0].organization_id || 0) === Number(scope.organizationId);
+  return Number(rows[0].district_id || 0) === Number(scope.districtId);
+}
+
 async function recordAudit(req, action, resourceType, resourceId = null, detail = null) {
   try {
     await pool.query(
@@ -71,8 +174,21 @@ router.get("/dashboard", async (req, res) => {
 router.get("/districts", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
+  const scoped = buildEntityScope(scope, "d.organization_id", "d.id");
+
   try {
-    const [rows] = await pool.query("SELECT id, name, code, created_at FROM districts ORDER BY id DESC");
+    const [rows] = await pool.query(
+      `SELECT d.id, d.name, d.code, d.organization_id, d.created_at, o.name AS organization_name
+       FROM districts d
+       LEFT JOIN organizations o ON o.id = d.organization_id
+       WHERE 1 = 1 ${scoped.clause}
+       ORDER BY d.id DESC`
+      ,
+      [...scoped.params]
+    );
     return res.json(rows);
   } catch (error) {
     return res.status(500).json({ message: "Failed to fetch districts" });
@@ -82,14 +198,23 @@ router.get("/districts", async (req, res) => {
 router.post("/districts", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
-  const { name, code } = req.body;
-  if (!name || !code) {
-    return res.status(400).json({ message: "name and code are required" });
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
+  const { name, code, organizationId } = req.body;
+  if (!name || !code || !organizationId) {
+    return res.status(400).json({ message: "name, code and organizationId are required" });
   }
 
+  const orgAllowed = await isOrganizationAllowed(scope, Number(organizationId));
+  if (!orgAllowed) return res.status(403).json({ message: "Permission denied" });
+
   try {
-    const [result] = await pool.query("INSERT INTO districts (name, code) VALUES (?, ?)", [name, code]);
-    await recordAudit(req, "create", "district", result.insertId, { name, code });
+    const [result] = await pool.query(
+      "INSERT INTO districts (name, code, organization_id) VALUES (?, ?, ?)",
+      [name, code, organizationId]
+    );
+    await recordAudit(req, "create", "district", result.insertId, { name, code, organizationId });
     return res.status(201).json({ id: result.insertId });
   } catch (error) {
     return res.status(500).json({ message: "Failed to create district" });
@@ -99,15 +224,25 @@ router.post("/districts", async (req, res) => {
 router.put("/districts/:id", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
   const districtId = Number(req.params.id);
-  const { name, code } = req.body;
+  const { name, code, organizationId } = req.body;
   if (!Number.isInteger(districtId) || districtId <= 0) return res.status(400).json({ message: "Invalid districtId" });
-  if (!name || !code) return res.status(400).json({ message: "name and code are required" });
+  if (!name || !code || !organizationId) return res.status(400).json({ message: "name, code and organizationId are required" });
+
+  const districtAllowed = await isDistrictAllowed(scope, districtId);
+  const orgAllowed = await isOrganizationAllowed(scope, Number(organizationId));
+  if (!districtAllowed || !orgAllowed) return res.status(403).json({ message: "Permission denied" });
 
   try {
-    const [result] = await pool.query("UPDATE districts SET name = ?, code = ? WHERE id = ?", [name, code, districtId]);
+    const [result] = await pool.query(
+      "UPDATE districts SET name = ?, code = ?, organization_id = ? WHERE id = ?",
+      [name, code, organizationId, districtId]
+    );
     if (result.affectedRows === 0) return res.status(404).json({ message: "District not found" });
-    await recordAudit(req, "update", "district", districtId, { name, code });
+    await recordAudit(req, "update", "district", districtId, { name, code, organizationId });
     return res.json({ message: "District updated" });
   } catch (error) {
     return res.status(500).json({ message: "Failed to update district" });
@@ -117,8 +252,14 @@ router.put("/districts/:id", async (req, res) => {
 router.delete("/districts/:id", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
   const districtId = Number(req.params.id);
   if (!Number.isInteger(districtId) || districtId <= 0) return res.status(400).json({ message: "Invalid districtId" });
+
+  const districtAllowed = await isDistrictAllowed(scope, districtId);
+  if (!districtAllowed) return res.status(403).json({ message: "Permission denied" });
 
   try {
     const [result] = await pool.query("DELETE FROM districts WHERE id = ?", [districtId]);
@@ -133,12 +274,20 @@ router.delete("/districts/:id", async (req, res) => {
 router.get("/organizations", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
+  const scoped = buildOrganizationScope(scope, "o.id");
+
   try {
     const [rows] = await pool.query(
-      `SELECT o.id, o.name, o.code, o.category, o.district_id, d.name AS district_name, o.created_at
+      `SELECT o.id, o.name, o.code, o.category, o.created_at,
+              (SELECT COUNT(*) FROM districts d WHERE d.organization_id = o.id) AS district_count
        FROM organizations o
-       LEFT JOIN districts d ON d.id = o.district_id
+       WHERE 1 = 1 ${scoped.clause}
        ORDER BY o.id DESC`
+      ,
+      [...scoped.params]
     );
     return res.json(rows);
   } catch (error) {
@@ -149,6 +298,11 @@ router.get("/organizations", async (req, res) => {
 router.get("/classrooms", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
+  const scoped = buildEntityScope(scope, "c.organization_id", "c.district_id");
+
   try {
     const [rows] = await pool.query(
       `SELECT c.id, c.name, c.code, c.organization_id, c.district_id, c.assistant_user_id, c.created_at,
@@ -157,7 +311,10 @@ router.get("/classrooms", async (req, res) => {
        LEFT JOIN organizations o ON o.id = c.organization_id
        LEFT JOIN districts d ON d.id = c.district_id
        LEFT JOIN users u ON u.id = c.assistant_user_id
+       WHERE 1 = 1 ${scoped.clause}
        ORDER BY c.id DESC`
+      ,
+      [...scoped.params]
     );
     return res.json(rows);
   } catch (error) {
@@ -168,10 +325,17 @@ router.get("/classrooms", async (req, res) => {
 router.post("/classrooms", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
   const { name, code, organizationId, districtId, assistantUserId } = req.body;
   if (!name || !code || !organizationId || !districtId) {
     return res.status(400).json({ message: "name, code, organizationId and districtId are required" });
   }
+
+  const orgAllowed = await isOrganizationAllowed(scope, Number(organizationId));
+  const districtAllowed = await isDistrictAllowed(scope, Number(districtId));
+  if (!orgAllowed || !districtAllowed) return res.status(403).json({ message: "Permission denied" });
 
   try {
     const [result] = await pool.query(
@@ -188,10 +352,24 @@ router.post("/classrooms", async (req, res) => {
 router.put("/classrooms/:id", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
   const classroomId = Number(req.params.id);
   const { name, code, organizationId, districtId, assistantUserId } = req.body;
   if (!Number.isInteger(classroomId) || classroomId <= 0) return res.status(400).json({ message: "Invalid classroomId" });
   if (!name || !code || !organizationId || !districtId) return res.status(400).json({ message: "name, code, organizationId and districtId are required" });
+
+  const scoped = buildEntityScope(scope, "organization_id", "district_id");
+  const [targetRows] = await pool.query(
+    `SELECT id FROM fixed_classrooms WHERE id = ? ${scoped.clause} LIMIT 1`,
+    [classroomId, ...scoped.params]
+  );
+  if (targetRows.length === 0) return res.status(403).json({ message: "Permission denied" });
+
+  const orgAllowed = await isOrganizationAllowed(scope, Number(organizationId));
+  const districtAllowed = await isDistrictAllowed(scope, Number(districtId));
+  if (!orgAllowed || !districtAllowed) return res.status(403).json({ message: "Permission denied" });
 
   try {
     const [result] = await pool.query(
@@ -209,8 +387,18 @@ router.put("/classrooms/:id", async (req, res) => {
 router.delete("/classrooms/:id", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
   const classroomId = Number(req.params.id);
   if (!Number.isInteger(classroomId) || classroomId <= 0) return res.status(400).json({ message: "Invalid classroomId" });
+
+  const scoped = buildEntityScope(scope, "organization_id", "district_id");
+  const [targetRows] = await pool.query(
+    `SELECT id FROM fixed_classrooms WHERE id = ? ${scoped.clause} LIMIT 1`,
+    [classroomId, ...scoped.params]
+  );
+  if (targetRows.length === 0) return res.status(403).json({ message: "Permission denied" });
 
   try {
     const [result] = await pool.query("DELETE FROM fixed_classrooms WHERE id = ?", [classroomId]);
@@ -225,15 +413,18 @@ router.delete("/classrooms/:id", async (req, res) => {
 router.post("/organizations", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
-  const { name, code, category, districtId } = req.body;
+  const scope = await resolveManageScope(req);
+  if (!scope || scope.role !== "admin") return res.status(403).json({ message: "Permission denied" });
+
+  const { name, code, category } = req.body;
   if (!name || !code) return res.status(400).json({ message: "name and code are required" });
 
   try {
     const [result] = await pool.query(
-      "INSERT INTO organizations (name, code, category, district_id) VALUES (?, ?, ?, ?)",
-      [name, code, category || "school", districtId || null]
+      "INSERT INTO organizations (name, code, category, district_id) VALUES (?, ?, ?, NULL)",
+      [name, code, category || "school"]
     );
-    await recordAudit(req, "create", "organization", result.insertId, { name, code, category, districtId });
+    await recordAudit(req, "create", "organization", result.insertId, { name, code, category });
     return res.status(201).json({ id: result.insertId });
   } catch (error) {
     return res.status(500).json({ message: "Failed to create organization" });
@@ -243,18 +434,24 @@ router.post("/organizations", async (req, res) => {
 router.put("/organizations/:id", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
   const organizationId = Number(req.params.id);
-  const { name, code, category, districtId } = req.body;
+  const { name, code, category } = req.body;
   if (!Number.isInteger(organizationId) || organizationId <= 0) return res.status(400).json({ message: "Invalid organizationId" });
   if (!name || !code) return res.status(400).json({ message: "name and code are required" });
 
+  const orgAllowed = await isOrganizationAllowed(scope, organizationId);
+  if (!orgAllowed) return res.status(403).json({ message: "Permission denied" });
+
   try {
     const [result] = await pool.query(
-      "UPDATE organizations SET name = ?, code = ?, category = ?, district_id = ? WHERE id = ?",
-      [name, code, category || "school", districtId || null, organizationId]
+      "UPDATE organizations SET name = ?, code = ?, category = ? WHERE id = ?",
+      [name, code, category || "school", organizationId]
     );
     if (result.affectedRows === 0) return res.status(404).json({ message: "Organization not found" });
-    await recordAudit(req, "update", "organization", organizationId, { name, code, category, districtId });
+    await recordAudit(req, "update", "organization", organizationId, { name, code, category });
     return res.json({ message: "Organization updated" });
   } catch (error) {
     return res.status(500).json({ message: "Failed to update organization" });
@@ -264,8 +461,14 @@ router.put("/organizations/:id", async (req, res) => {
 router.delete("/organizations/:id", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
   const organizationId = Number(req.params.id);
   if (!Number.isInteger(organizationId) || organizationId <= 0) return res.status(400).json({ message: "Invalid organizationId" });
+
+  const orgAllowed = await isOrganizationAllowed(scope, organizationId);
+  if (!orgAllowed) return res.status(403).json({ message: "Permission denied" });
 
   try {
     const [result] = await pool.query("DELETE FROM organizations WHERE id = ?", [organizationId]);
@@ -280,6 +483,11 @@ router.delete("/organizations/:id", async (req, res) => {
 router.get("/users", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
+  const scoped = buildEntityScope(scope, "u.organization_id", "u.district_id");
+
   try {
     const [rows] = await pool.query(
       `SELECT u.id, u.full_name, u.email, u.role, u.status, u.organization_id, u.district_id, u.created_at,
@@ -287,7 +495,10 @@ router.get("/users", async (req, res) => {
        FROM users u
        LEFT JOIN organizations o ON o.id = u.organization_id
        LEFT JOIN districts d ON d.id = u.district_id
+       WHERE 1 = 1 ${scoped.clause}
        ORDER BY u.id DESC`
+      ,
+      [...scoped.params]
     );
     return res.json(rows);
   } catch (error) {
@@ -298,6 +509,11 @@ router.get("/users", async (req, res) => {
 router.get("/guardian-links", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
+  const scoped = buildDualUserScope(scope, "p", "s");
+
   try {
     const [rows] = await pool.query(
       `SELECT gl.id, gl.parent_user_id, gl.student_user_id, gl.created_at,
@@ -306,7 +522,10 @@ router.get("/guardian-links", async (req, res) => {
        FROM guardian_student_links gl
        LEFT JOIN users p ON p.id = gl.parent_user_id
        LEFT JOIN users s ON s.id = gl.student_user_id
+       WHERE 1 = 1 ${scoped.clause}
        ORDER BY gl.id DESC`
+      ,
+      [...scoped.params]
     );
     return res.json(rows);
   } catch (error) {
@@ -317,10 +536,17 @@ router.get("/guardian-links", async (req, res) => {
 router.post("/guardian-links", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
   const { parentUserId, studentUserId } = req.body;
   if (!parentUserId || !studentUserId) {
     return res.status(400).json({ message: "parentUserId and studentUserId are required" });
   }
+
+  const parentAllowed = await isUserAllowed(scope, Number(parentUserId));
+  const studentAllowed = await isUserAllowed(scope, Number(studentUserId));
+  if (!parentAllowed || !studentAllowed) return res.status(403).json({ message: "Permission denied" });
 
   try {
     const [result] = await pool.query(
@@ -337,8 +563,23 @@ router.post("/guardian-links", async (req, res) => {
 router.delete("/guardian-links/:id", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
   const linkId = Number(req.params.id);
   if (!Number.isInteger(linkId) || linkId <= 0) return res.status(400).json({ message: "Invalid linkId" });
+
+  const scoped = buildDualUserScope(scope, "p", "s");
+  const [scopeRows] = await pool.query(
+    `SELECT gl.id
+     FROM guardian_student_links gl
+     LEFT JOIN users p ON p.id = gl.parent_user_id
+     LEFT JOIN users s ON s.id = gl.student_user_id
+     WHERE gl.id = ? ${scoped.clause}
+     LIMIT 1`,
+    [linkId, ...scoped.params]
+  );
+  if (scopeRows.length === 0) return res.status(403).json({ message: "Permission denied" });
 
   try {
     const [result] = await pool.query("DELETE FROM guardian_student_links WHERE id = ?", [linkId]);
@@ -353,10 +594,21 @@ router.delete("/guardian-links/:id", async (req, res) => {
 router.post("/users", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
   const { fullName, email, password, role, organizationId, districtId, status } = req.body;
   if (!fullName || !email || !password || !role) {
     return res.status(400).json({ message: "Missing required fields" });
   }
+
+  if (!canAssignRole(scope.role, role)) {
+    return res.status(403).json({ message: "Permission denied" });
+  }
+
+  const orgAllowed = await isOrganizationAllowed(scope, organizationId ? Number(organizationId) : null);
+  const districtAllowed = await isDistrictAllowed(scope, districtId ? Number(districtId) : null);
+  if (!orgAllowed || !districtAllowed) return res.status(403).json({ message: "Permission denied" });
 
   try {
     const [existing] = await pool.query("SELECT id FROM users WHERE email = ?", [email]);
@@ -380,10 +632,24 @@ router.post("/users", async (req, res) => {
 router.put("/users/:id", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
   const userId = Number(req.params.id);
   const { fullName, email, password, role, organizationId, districtId, status } = req.body;
   if (!Number.isInteger(userId) || userId <= 0) return res.status(400).json({ message: "Invalid userId" });
   if (!fullName || !email || !role) return res.status(400).json({ message: "Missing required fields" });
+
+  const targetAllowed = await isUserAllowed(scope, userId);
+  if (!targetAllowed) return res.status(403).json({ message: "Permission denied" });
+
+  if (!canAssignRole(scope.role, role)) {
+    return res.status(403).json({ message: "Permission denied" });
+  }
+
+  const orgAllowed = await isOrganizationAllowed(scope, organizationId ? Number(organizationId) : null);
+  const districtAllowed = await isDistrictAllowed(scope, districtId ? Number(districtId) : null);
+  if (!orgAllowed || !districtAllowed) return res.status(403).json({ message: "Permission denied" });
 
   try {
     const hashPart = password ? await bcrypt.hash(password, 10) : null;
@@ -409,8 +675,14 @@ router.put("/users/:id", async (req, res) => {
 router.delete("/users/:id", async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
   const userId = Number(req.params.id);
   if (!Number.isInteger(userId) || userId <= 0) return res.status(400).json({ message: "Invalid userId" });
+
+  const targetAllowed = await isUserAllowed(scope, userId);
+  if (!targetAllowed) return res.status(403).json({ message: "Permission denied" });
 
   try {
     const [result] = await pool.query("DELETE FROM users WHERE id = ?", [userId]);

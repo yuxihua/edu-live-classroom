@@ -54,7 +54,7 @@ router.get("/:courseId/join-link", requireAuth, async (req, res) => {
     const course = rows[0];
     const isTeacher = Number(course.teacher_user_id || 0) === Number(req.user.userId);
     const isAssistant = Number(course.assistant_user_id || 0) === Number(req.user.userId);
-    let allowed = isTeacher || isAssistant || req.user.role === "admin";
+    let allowed = isTeacher || isAssistant || ["admin", "org_admin", "district_admin"].includes(req.user.role);
 
     if (!allowed && req.user.role === "student") {
       const [purchaseRows] = await pool.query(
