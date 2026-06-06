@@ -13,6 +13,23 @@ This project provides a starter codebase for a training-school live classroom sy
 - Replay list and add replay (admin/teacher create, student read after enrollment)
 - Signed classroom join link endpoint for OpenMeetings URL
 
+## Management capabilities (new)
+
+- System account management: admin, org_admin, district_admin, teacher, assistant, student, parent
+- Role permission configuration with role_permissions table
+- System audit logs (key actions: user/org/district/course/attendance)
+- Organization settings management
+- District management
+- Teacher and fixed classroom assistant support
+- Admin center web page (`/admin`) for dashboard, users, permissions, settings, and logs
+
+## Data scope
+
+- Admin can access all data
+- Organization admins are scoped to their organization
+- District admins are scoped to their district
+- Other users are scoped by their assigned organization/district when available
+
 ## Structure
 
 - `frontend`: Vue 3 + Vite web app

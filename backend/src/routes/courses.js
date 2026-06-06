@@ -1,6 +1,7 @@
 import express from "express";
 import pool from "../config/db.js";
 import { requireAuth } from "../middleware/auth.js";
+import { hasPermission } from "../middleware/permissions.js";
 
 const router = express.Router();
 
@@ -18,24 +19,84 @@ function buildOpenMeetingsRoomUrl(courseId) {
   }
 }
 
-function canManageCourse(role) {
-  return ["admin", "teacher"].includes(role);
+async function canManageCourse(req) {
+  if (["admin", "org_admin", "district_admin", "teacher"].includes(req.user.role)) {
+    return true;
+  }
+  return hasPermission(req.user.role, "course.manage");
 }
 
-function canViewReplay(role) {
-  return ["admin", "teacher", "student"].includes(role);
+async function canViewReplay(req) {
+  if (["admin", "org_admin", "district_admin", "teacher", "assistant", "student", "parent"].includes(req.user.role)) {
+    return true;
+  }
+  return hasPermission(req.user.role, "replay.view");
+}
+
+function buildScopeForAlias(user, alias) {
+  if (user.role === "admin") {
+    return { clause: "", params: [] };
+  }
+
+  if (user.role === "org_admin" && user.organizationId) {
+    return { clause: ` AND ${alias}.organization_id = ?`, params: [user.organizationId] };
+  }
+
+  if (user.role === "district_admin" && user.districtId) {
+    return { clause: ` AND ${alias}.district_id = ?`, params: [user.districtId] };
+  }
+
+  if (user.organizationId) {
+    return { clause: ` AND ${alias}.organization_id = ?`, params: [user.organizationId] };
+  }
+
+  if (user.districtId) {
+    return { clause: ` AND ${alias}.district_id = ?`, params: [user.districtId] };
+  }
+
+  return { clause: "", params: [] };
+}
+
+function resolveCourseOwner(req) {
+  const organizationId = req.user.organizationId ? Number(req.user.organizationId) : null;
+  const districtId = req.user.districtId ? Number(req.user.districtId) : null;
+  return { organizationId, districtId };
+}
+
+async function ensureCourseScope(req, courseId) {
+  const scope = buildScopeForAlias(req.user, "c");
+  const [rows] = await pool.query(
+    `SELECT c.id FROM courses c WHERE c.id = ? ${scope.clause} LIMIT 1`,
+    [courseId, ...scope.params]
+  );
+  return rows.length > 0;
+}
+
+async function recordAudit(req, action, resourceType, resourceId = null, detail = null) {
+  try {
+    await pool.query(
+      "INSERT INTO audit_logs (actor_user_id, action, resource_type, resource_id, detail, ip_address) VALUES (?, ?, ?, ?, ?, ?)",
+      [req.user?.userId || null, action, resourceType, resourceId, detail ? JSON.stringify(detail) : null, req.ip || null]
+    );
+  } catch (error) {
+    // ignore audit errors
+  }
 }
 
 router.get("/", requireAuth, async (req, res) => {
   const keyword = String(req.query.keyword || "").trim();
+  const scope = buildScopeForAlias(req.user, "c");
 
   try {
     const [rows] = await pool.query(
       `SELECT
          c.id,
+         c.organization_id,
+         c.district_id,
          c.title,
          c.subject,
          c.teacher_name,
+         c.assistant_name,
          c.start_time,
          c.end_time,
          c.meeting_url,
@@ -46,8 +107,9 @@ router.get("/", requireAuth, async (req, res) => {
          ) AS enrolled
        FROM courses c
        WHERE (? = '' OR c.title LIKE CONCAT('%', ?, '%') OR c.subject LIKE CONCAT('%', ?, '%'))
+         ${scope.clause}
        ORDER BY c.start_time DESC`,
-      [req.user.userId, keyword, keyword, keyword]
+      [req.user.userId, keyword, keyword, keyword, ...scope.params]
     );
     return res.json(rows);
   } catch (error) {
@@ -56,11 +118,11 @@ router.get("/", requireAuth, async (req, res) => {
 });
 
 router.post("/", requireAuth, async (req, res) => {
-  if (!canManageCourse(req.user.role)) {
-    return res.status(403).json({ message: "Only admin or teacher can create course" });
+  if (!(await canManageCourse(req))) {
+    return res.status(403).json({ message: "Only admin, organization admin, district admin or teacher can create course" });
   }
 
-  const { title, subject, teacherName, startTime, endTime, meetingUrl } = req.body;
+  const { title, subject, teacherName, assistantName, startTime, endTime, meetingUrl } = req.body;
   if (!title || !teacherName || !startTime || !endTime) {
     return res.status(400).json({ message: "Missing required fields" });
   }
@@ -72,10 +134,12 @@ router.post("/", requireAuth, async (req, res) => {
     });
   }
 
+  const owner = resolveCourseOwner(req);
+
   try {
     const [result] = await pool.query(
-      "INSERT INTO courses (title, subject, teacher_name, start_time, end_time, meeting_url) VALUES (?, ?, ?, ?, ?, ?)",
-      [title, subject || null, teacherName, startTime, endTime, meetingUrl || null]
+      "INSERT INTO courses (organization_id, district_id, title, subject, teacher_name, teacher_user_id, assistant_name, start_time, end_time, meeting_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [owner.organizationId, owner.districtId, title, subject || null, teacherName, req.user.role === "teacher" ? req.user.userId : null, assistantName || null, startTime, endTime, meetingUrl || null]
     );
 
     if (!meetingUrl && hasOpenMeetingsBaseUrl) {
@@ -85,6 +149,8 @@ router.post("/", requireAuth, async (req, res) => {
       }
     }
 
+    await recordAudit(req, "create", "course", result.insertId, { title, subject, teacherName, assistantName: assistantName || null });
+
     return res.status(201).json({ id: result.insertId });
   } catch (error) {
     return res.status(500).json({ message: "Failed to create course" });
@@ -92,8 +158,8 @@ router.post("/", requireAuth, async (req, res) => {
 });
 
 router.put("/:id", requireAuth, async (req, res) => {
-  if (!canManageCourse(req.user.role)) {
-    return res.status(403).json({ message: "Only admin or teacher can update course" });
+  if (!(await canManageCourse(req))) {
+    return res.status(403).json({ message: "Only admin, organization admin, district admin or teacher can update course" });
   }
 
   const courseId = Number(req.params.id);
@@ -101,20 +167,27 @@ router.put("/:id", requireAuth, async (req, res) => {
     return res.status(400).json({ message: "Invalid courseId" });
   }
 
-  const { title, subject, teacherName, startTime, endTime, meetingUrl } = req.body;
+  const { title, subject, teacherName, assistantName, startTime, endTime, meetingUrl } = req.body;
   if (!title || !teacherName || !startTime || !endTime) {
     return res.status(400).json({ message: "Missing required fields" });
   }
 
   try {
+    const inScope = await ensureCourseScope(req, courseId);
+    if (!inScope) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
     const [result] = await pool.query(
-      "UPDATE courses SET title = ?, subject = ?, teacher_name = ?, start_time = ?, end_time = ?, meeting_url = ? WHERE id = ?",
-      [title, subject || null, teacherName, startTime, endTime, meetingUrl || null, courseId]
+      "UPDATE courses SET title = ?, subject = ?, teacher_name = ?, assistant_name = ?, start_time = ?, end_time = ?, meeting_url = ? WHERE id = ?",
+      [title, subject || null, teacherName, assistantName || null, startTime, endTime, meetingUrl || null, courseId]
     );
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: "Course not found" });
     }
+
+    await recordAudit(req, "update", "course", courseId, { title, subject, teacherName, assistantName: assistantName || null });
 
     return res.json({ message: "Course updated" });
   } catch (error) {
@@ -123,8 +196,8 @@ router.put("/:id", requireAuth, async (req, res) => {
 });
 
 router.delete("/:id", requireAuth, async (req, res) => {
-  if (!canManageCourse(req.user.role)) {
-    return res.status(403).json({ message: "Only admin or teacher can delete course" });
+  if (!(await canManageCourse(req))) {
+    return res.status(403).json({ message: "Only admin, organization admin, district admin or teacher can delete course" });
   }
 
   const courseId = Number(req.params.id);
@@ -133,10 +206,17 @@ router.delete("/:id", requireAuth, async (req, res) => {
   }
 
   try {
+    const inScope = await ensureCourseScope(req, courseId);
+    if (!inScope) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
     const [result] = await pool.query("DELETE FROM courses WHERE id = ?", [courseId]);
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: "Course not found" });
     }
+
+    await recordAudit(req, "delete", "course", courseId);
     return res.json({ message: "Course deleted" });
   } catch (error) {
     return res.status(500).json({ message: "Failed to delete course" });
@@ -158,6 +238,8 @@ router.post("/:id/enroll", requireAuth, async (req, res) => {
       "INSERT INTO course_enrollments (course_id, user_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE user_id = user_id",
       [courseId, req.user.userId]
     );
+
+    await recordAudit(req, "enroll", "course", courseId, { userId: req.user.userId });
     return res.status(201).json({ message: "Enrolled" });
   } catch (error) {
     return res.status(500).json({ message: "Failed to enroll" });
@@ -165,8 +247,8 @@ router.post("/:id/enroll", requireAuth, async (req, res) => {
 });
 
 router.get("/:id/attendance-summary", requireAuth, async (req, res) => {
-  if (!canManageCourse(req.user.role)) {
-    return res.status(403).json({ message: "Only admin or teacher can view summary" });
+  if (!(await canManageCourse(req))) {
+    return res.status(403).json({ message: "Only admin, organization admin, district admin or teacher can view summary" });
   }
 
   const courseId = Number(req.params.id);
@@ -175,6 +257,11 @@ router.get("/:id/attendance-summary", requireAuth, async (req, res) => {
   }
 
   try {
+    const inScope = await ensureCourseScope(req, courseId);
+    if (!inScope) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
     const [rows] = await pool.query(
       `SELECT
          COUNT(*) AS total_checkins,
@@ -192,7 +279,7 @@ router.get("/:id/attendance-summary", requireAuth, async (req, res) => {
 });
 
 router.get("/:id/replays", requireAuth, async (req, res) => {
-  if (!canViewReplay(req.user.role)) {
+  if (!(await canViewReplay(req))) {
     return res.status(403).json({ message: "No permission to view replays" });
   }
 
@@ -202,6 +289,11 @@ router.get("/:id/replays", requireAuth, async (req, res) => {
   }
 
   try {
+    const inScope = await ensureCourseScope(req, courseId);
+    if (!inScope) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
     if (req.user.role === "student") {
       const [enrollRows] = await pool.query(
         "SELECT id FROM course_enrollments WHERE course_id = ? AND user_id = ? LIMIT 1",
@@ -223,8 +315,8 @@ router.get("/:id/replays", requireAuth, async (req, res) => {
 });
 
 router.post("/:id/replays", requireAuth, async (req, res) => {
-  if (!canManageCourse(req.user.role)) {
-    return res.status(403).json({ message: "Only admin or teacher can add replay" });
+  if (!(await canManageCourse(req))) {
+    return res.status(403).json({ message: "Only admin, organization admin, district admin or teacher can add replay" });
   }
 
   const courseId = Number(req.params.id);
@@ -238,10 +330,17 @@ router.post("/:id/replays", requireAuth, async (req, res) => {
   }
 
   try {
+    const inScope = await ensureCourseScope(req, courseId);
+    if (!inScope) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
     const [result] = await pool.query(
       "INSERT INTO course_replays (course_id, title, replay_url, duration_seconds) VALUES (?, ?, ?, ?)",
       [courseId, title, replayUrl, durationSeconds || null]
     );
+
+    await recordAudit(req, "add", "replay", courseId, { title, replayUrl, durationSeconds: durationSeconds || null });
     return res.status(201).json({ id: result.insertId });
   } catch (error) {
     return res.status(500).json({ message: "Failed to add replay" });

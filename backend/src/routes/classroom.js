@@ -5,16 +5,45 @@ import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
+function buildScopeForAlias(user, alias) {
+  if (user.role === "admin") {
+    return { clause: "", params: [] };
+  }
+
+  if (user.role === "org_admin" && user.organizationId) {
+    return { clause: ` AND ${alias}.organization_id = ?`, params: [user.organizationId] };
+  }
+
+  if (user.role === "district_admin" && user.districtId) {
+    return { clause: ` AND ${alias}.district_id = ?`, params: [user.districtId] };
+  }
+
+  if (user.organizationId) {
+    return { clause: ` AND ${alias}.organization_id = ?`, params: [user.organizationId] };
+  }
+
+  if (user.districtId) {
+    return { clause: ` AND ${alias}.district_id = ?`, params: [user.districtId] };
+  }
+
+  return { clause: "", params: [] };
+}
+
 router.get("/:courseId/join-link", requireAuth, async (req, res) => {
   const courseId = Number(req.params.courseId);
   if (!Number.isInteger(courseId) || courseId <= 0) {
     return res.status(400).json({ message: "Invalid courseId" });
   }
 
+  const scope = buildScopeForAlias(req.user, "c");
+
   try {
     const [rows] = await pool.query(
-      "SELECT id, title, meeting_url FROM courses WHERE id = ? LIMIT 1",
-      [courseId]
+      `SELECT c.id, c.title, c.meeting_url
+       FROM courses c
+       WHERE c.id = ? ${scope.clause}
+       LIMIT 1`,
+      [courseId, ...scope.params]
     );
 
     if (rows.length === 0) {

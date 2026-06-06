@@ -11,6 +11,11 @@ router.post("/register", async (req, res) => {
     return res.status(400).json({ message: "Missing required fields" });
   }
 
+  const allowedRoles = ["student", "parent", "assistant", "teacher"];
+  if (!allowedRoles.includes(role)) {
+    return res.status(403).json({ message: "Registration role not allowed" });
+  }
+
   try {
     const [existing] = await pool.query("SELECT id FROM users WHERE email = ?", [email]);
     if (existing.length > 0) {
@@ -37,7 +42,7 @@ router.post("/login", async (req, res) => {
 
   try {
     const [rows] = await pool.query(
-      "SELECT id, full_name, email, password_hash, role FROM users WHERE email = ?",
+      "SELECT id, full_name, email, password_hash, role, organization_id, district_id, status FROM users WHERE email = ?",
       [email]
     );
 
@@ -52,7 +57,7 @@ router.post("/login", async (req, res) => {
     }
 
     const token = jwt.sign(
-      { userId: user.id, role: user.role, email: user.email },
+      { userId: user.id, role: user.role, email: user.email, organizationId: user.organization_id || null, districtId: user.district_id || null, status: user.status || "active" },
       process.env.JWT_SECRET,
       { expiresIn: "12h" }
     );
@@ -63,7 +68,10 @@ router.post("/login", async (req, res) => {
         id: user.id,
         fullName: user.full_name,
         email: user.email,
-        role: user.role
+        role: user.role,
+        organizationId: user.organization_id || null,
+        districtId: user.district_id || null,
+        status: user.status || "active"
       }
     });
   } catch (error) {
