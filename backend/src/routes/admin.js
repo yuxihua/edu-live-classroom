@@ -612,6 +612,11 @@ router.post("/users", async (req, res) => {
   if (!orgAllowed || !districtAllowed) return res.status(403).json({ message: "Permission denied" });
 
   try {
+    const [existingName] = await pool.query("SELECT id FROM users WHERE full_name = ? LIMIT 1", [fullName]);
+    if (existingName.length > 0) {
+      return res.status(409).json({ message: "Full name already exists" });
+    }
+
     if (normalizedEmail) {
       const [existing] = await pool.query("SELECT id FROM users WHERE email = ?", [normalizedEmail]);
       if (existing.length > 0) {
@@ -656,6 +661,11 @@ router.put("/users/:id", async (req, res) => {
   if (!orgAllowed || !districtAllowed) return res.status(403).json({ message: "Permission denied" });
 
   try {
+    const [existingName] = await pool.query("SELECT id FROM users WHERE full_name = ? AND id <> ? LIMIT 1", [fullName, userId]);
+    if (existingName.length > 0) {
+      return res.status(409).json({ message: "Full name already exists" });
+    }
+
     if (normalizedEmail) {
       const [existing] = await pool.query("SELECT id FROM users WHERE email = ? AND id <> ? LIMIT 1", [normalizedEmail, userId]);
       if (existing.length > 0) {

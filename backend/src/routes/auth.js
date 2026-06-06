@@ -36,16 +36,24 @@ router.post("/register", async (req, res) => {
 });
 
 router.post("/login", async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ message: "Email and password required" });
+  const account = String(req.body.account || req.body.email || "").trim();
+  const { password } = req.body;
+  if (!account || !password) {
+    return res.status(400).json({ message: "Account and password required" });
   }
 
   try {
+    const isEmailLike = account.includes("@");
     const [rows] = await pool.query(
-      "SELECT id, full_name, email, password_hash, role, organization_id, district_id, status FROM users WHERE email = ?",
-      [email]
+      isEmailLike
+        ? "SELECT id, full_name, email, password_hash, role, organization_id, district_id, status FROM users WHERE email = ? LIMIT 2"
+        : "SELECT id, full_name, email, password_hash, role, organization_id, district_id, status FROM users WHERE full_name = ? LIMIT 2",
+      [account]
     );
+
+    if (rows.length > 1) {
+      return res.status(409).json({ message: "Account is duplicated" });
+    }
 
     if (rows.length === 0) {
       return res.status(401).json({ message: "Invalid credentials" });

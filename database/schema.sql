@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS users (
   organization_id BIGINT UNSIGNED NULL,
   district_id BIGINT UNSIGNED NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'active',
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_users_full_name (full_name)
 );
 
 CREATE TABLE IF NOT EXISTS districts (
@@ -180,6 +181,22 @@ EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
 SET @db = DATABASE();
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.statistics
+    WHERE table_schema = @db AND table_name = 'users' AND index_name = 'uk_users_full_name'
+  ) OR EXISTS(
+    SELECT 1 FROM (
+      SELECT full_name FROM users GROUP BY full_name HAVING COUNT(*) > 1
+    ) AS dup
+  ),
+  'SELECT 1',
+  'ALTER TABLE users ADD UNIQUE KEY uk_users_full_name (full_name)'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 SET @sql = IF(
   EXISTS(

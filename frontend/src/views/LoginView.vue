@@ -4,14 +4,16 @@ import { useRouter } from "vue-router";
 import http from "../api/http.js";
 
 const router = useRouter();
-const email = ref("admin@example.com");
+const account = ref("admin@example.com");
 const password = ref("Passw0rd!");
 const loading = ref(false);
 const errorText = ref("");
 
 const messageMap = {
   "Invalid credentials": "账号或密码错误",
-  "Email and password required": "请输入邮箱和密码",
+  "Email and password required": "请输入账号和密码",
+  "Account and password required": "请输入账号和密码",
+  "Account is duplicated": "账号重名，请联系管理员处理",
   "Login failed": "登录失败"
 };
 
@@ -27,7 +29,7 @@ const login = async () => {
   errorText.value = "";
   try {
     const { data } = await http.post("/auth/login", {
-      email: email.value,
+      account: account.value,
       password: password.value
     });
     localStorage.setItem("token", data.token);
@@ -47,7 +49,7 @@ const login = async () => {
       <h1>教培直播课堂登录</h1>
       <p>请使用教师或学员账号登录。</p>
       <form @submit.prevent="login" class="form">
-        <input v-model="email" type="email" placeholder="邮箱" required />
+        <input v-model="account" type="text" placeholder="账号（邮箱或姓名）" required />
         <input v-model="password" type="password" placeholder="密码" required />
         <button type="submit" :disabled="loading">{{ loading ? "登录中..." : "登录" }}</button>
         <p class="error" v-if="errorText">{{ errorText }}</p>

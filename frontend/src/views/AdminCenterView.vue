@@ -38,11 +38,46 @@ const userForm = ref({
   status: "active"
 });
 const settingForm = ref({ key: "", value: "", category: "general" });
-const permissionForm = ref({ roleName: "teacher", permissionText: "course.manage,course.view" });
+const permissionForm = ref({ roleName: "teacher" });
+const selectedPermissions = ref({});
+const collapsedPermissionGroups = ref({});
 const currentUser = JSON.parse(localStorage.getItem("user") || "{}");
 
 const roleOptions = ["admin", "org_admin", "district_admin", "teacher", "assistant", "student", "parent"];
 const categoryOptions = ["school", "center", "district", "company"];
+const permissionGroups = [
+  {
+    key: "platform",
+    title: "平台权限",
+    items: [
+      { key: "system.manage", label: "系统管理" },
+      { key: "settings.manage", label: "系统设置" },
+      { key: "permission.manage", label: "权限管理" },
+      { key: "log.view", label: "系统日志查看" }
+    ]
+  },
+  {
+    key: "org",
+    title: "机构与账号",
+    items: [
+      { key: "organization.manage", label: "机构管理" },
+      { key: "district.manage", label: "学区管理" },
+      { key: "user.manage", label: "账号管理" }
+    ]
+  },
+  {
+    key: "teaching",
+    title: "教学业务",
+    items: [
+      { key: "course.manage", label: "课程管理" },
+      { key: "course.view", label: "课程查看" },
+      { key: "replay.manage", label: "回放管理" },
+      { key: "replay.view", label: "回放查看" },
+      { key: "attendance.manage", label: "签到管理" },
+      { key: "attendance.self", label: "个人签到" }
+    ]
+  }
+];
 
 const messageMap = {
   "Permission denied": "没有权限访问管理中心",
@@ -61,6 +96,7 @@ const messageMap = {
   "Failed to update user": "更新账号失败",
   "Failed to delete user": "删除账号失败",
   "Email already exists": "邮箱已存在",
+  "Full name already exists": "账号名已存在",
   "Failed to load settings": "加载系统设置失败",
   "Failed to update setting": "更新系统设置失败",
   "Failed to fetch permissions": "加载权限失败",
@@ -87,6 +123,60 @@ const messageMap = {
 const toChineseMessage = (message, fallback) => {
   if (!message) return fallback;
   return messageMap[message] || message;
+};
+
+const allPermissionKeys = computed(() => permissionGroups.flatMap((group) => group.items.map((item) => item.key)));
+
+const resetSelectedPermissions = () => {
+  const next = {};
+  allPermissionKeys.value.forEach((key) => {
+    next[key] = false;
+  });
+  selectedPermissions.value = next;
+};
+
+const initializePermissionGroupCollapse = () => {
+  const next = {};
+  permissionGroups.forEach((group) => {
+    next[group.key] = false;
+  });
+  collapsedPermissionGroups.value = next;
+};
+
+const applyPermissionsForRole = () => {
+  resetSelectedPermissions();
+  const roleName = permissionForm.value.roleName;
+  permissions.value
+    .filter((item) => item.role_name === roleName && Number(item.permission_value) === 1)
+    .forEach((item) => {
+      if (Object.prototype.hasOwnProperty.call(selectedPermissions.value, item.permission_key)) {
+        selectedPermissions.value[item.permission_key] = true;
+      }
+    });
+};
+
+const isGroupChecked = (group) => group.items.every((item) => selectedPermissions.value[item.key]);
+
+const isGroupIndeterminate = (group) => {
+  const checkedCount = checkedCountByGroup(group);
+  return checkedCount > 0 && checkedCount < group.items.length;
+};
+
+const checkedCountByGroup = (group) => group.items.filter((item) => selectedPermissions.value[item.key]).length;
+
+const toggleGroup = (group, checked) => {
+  group.items.forEach((item) => {
+    selectedPermissions.value[item.key] = checked;
+  });
+};
+
+const togglePermissionGroupCollapse = (groupKey) => {
+  collapsedPermissionGroups.value[groupKey] = !collapsedPermissionGroups.value[groupKey];
+};
+
+const syncGroupCheckboxState = (el, group) => {
+  if (!el) return;
+  el.indeterminate = isGroupIndeterminate(group);
 };
 
 const fetchDashboard = async () => {
@@ -127,6 +217,7 @@ const fetchSettings = async () => {
 const fetchPermissions = async () => {
   const { data } = await http.get("/admin/permissions");
   permissions.value = data;
+  applyPermissionsForRole();
 };
 
 const fetchLogs = async () => {
@@ -450,10 +541,8 @@ const updateSetting = async () => {
 };
 
 const updatePermissions = async () => {
-  const permissionList = permissionForm.value.permissionText
-    .split(/[\n,]/)
-    .map((item) => item.trim())
-    .filter(Boolean)
+  const permissionList = allPermissionKeys.value
+    .filter((key) => selectedPermissions.value[key])
     .map((permissionKey) => ({ permissionKey, permissionValue: true }));
 
   await http.put("/admin/permissions", {
@@ -464,6 +553,13 @@ const updatePermissions = async () => {
   await fetchPermissions();
 };
 
+watch(
+  () => permissionForm.value.roleName,
+  () => {
+    applyPermissionsForRole();
+  }
+);
+
 const logout = () => {
   localStorage.removeItem("token");
   localStorage.removeItem("user");
@@ -472,6 +568,7 @@ const logout = () => {
 
 onMounted(refreshActiveTab);
 onMounted(async () => {
+  initializePermissionGroupCollapse();
   await Promise.all([fetchOrganizations(), fetchDistricts()]);
 
   if (currentUser.role === "org_admin") {
@@ -666,19 +763,51 @@ onMounted(async () => {
     </section>
 
     <section v-else-if="activeTab === 'permissions'" class="card">
-      <h2>权限管理</h2>
-      <form class="form form-wide" @submit.prevent="updatePermissions">
-        <select v-model="permissionForm.roleName">
-          <option v-for="item in roleOptions" :key="item" :value="item">{{ item }}</option>
-        </select>
-        <textarea v-model="permissionForm.permissionText" rows="4" placeholder="权限键，英文逗号或换行分隔，例如：course.manage,log.view"></textarea>
-        <button type="submit">保存权限</button>
+      <h2>角色权限管理</h2>
+      <form class="perm-toolbar" @submit.prevent="updatePermissions">
+        <label class="perm-role">
+          角色
+          <select v-model="permissionForm.roleName">
+            <option v-for="item in roleOptions" :key="item" :value="item">{{ item }}</option>
+          </select>
+        </label>
+        <button type="submit">保存当前角色权限</button>
+        <button type="button" class="ghost" @click="fetchPermissions">刷新</button>
       </form>
-      <ul class="list">
-        <li v-for="item in permissions" :key="item.id">
-          <span>{{ item.role_name }} / {{ item.permission_key }} / {{ item.permission_value ? '允许' : '禁止' }}</span>
-        </li>
-      </ul>
+      <p class="perm-note">说明：配置修改后，目标账号重新登录即可按新权限看到菜单和可操作范围。</p>
+
+      <div class="perm-groups">
+        <section class="perm-group" v-for="group in permissionGroups" :key="group.key">
+          <header class="perm-group-head">
+            <label class="perm-main-check">
+              <input
+                type="checkbox"
+                :checked="isGroupChecked(group)"
+                :ref="(el) => syncGroupCheckboxState(el, group)"
+                @change="toggleGroup(group, $event.target.checked)"
+              />
+              <strong>{{ group.title }}</strong>
+            </label>
+            <div class="perm-head-actions">
+              <small>{{ checkedCountByGroup(group) }} / {{ group.items.length }}</small>
+              <button
+                type="button"
+                class="ghost perm-collapse"
+                @click="togglePermissionGroupCollapse(group.key)"
+              >
+                {{ collapsedPermissionGroups[group.key] ? '展开' : '收起' }}
+              </button>
+            </div>
+          </header>
+          <div class="perm-items" v-show="!collapsedPermissionGroups[group.key]">
+            <label class="perm-item" v-for="item in group.items" :key="item.key">
+              <input type="checkbox" v-model="selectedPermissions[item.key]" />
+              <span>{{ item.label }}</span>
+              <code>{{ item.key }}</code>
+            </label>
+          </div>
+        </section>
+      </div>
     </section>
 
     <section v-else class="card">
@@ -768,6 +897,87 @@ onMounted(async () => {
 
 .form-wide {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.perm-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.perm-role {
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+  color: #111827;
+}
+
+.perm-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.perm-groups {
+  display: grid;
+  gap: 10px;
+}
+
+.perm-group {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.perm-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  background: #f9fafb;
+}
+
+.perm-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.perm-main-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.perm-items {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.perm-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #111827;
+}
+
+.perm-item code {
+  margin-left: auto;
+  font-size: 12px;
+  color: #6b7280;
+  background: #f3f4f6;
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.perm-collapse {
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
 input, select, textarea {
