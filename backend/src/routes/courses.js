@@ -82,7 +82,37 @@ async function ensureCourseScope(req, courseId) {
   return rows.length > 0;
 }
 
-async function resolveTeacherForCourse(req, teacherUserId, teacherName) {
+async function resolveOrganizationIdByDistrict(districtId) {
+  const normalizedDistrictId = Number(districtId || 0);
+  if (!normalizedDistrictId) return null;
+  const [rows] = await pool.query("SELECT organization_id FROM districts WHERE id = ? LIMIT 1", [normalizedDistrictId]);
+  if (rows.length === 0) return null;
+  const organizationId = Number(rows[0].organization_id || 0);
+  return organizationId > 0 ? organizationId : null;
+}
+
+async function resolveTeacherOrganizationScope(req, organizationIdHint, districtIdHint) {
+  if (req.user.role === "admin") {
+    const adminOrgId = Number(organizationIdHint || 0);
+    return adminOrgId > 0 ? adminOrgId : null;
+  }
+
+  const userOrganizationId = Number(req.user.organizationId || 0);
+  if (userOrganizationId > 0) return userOrganizationId;
+
+  const hintOrganizationId = Number(organizationIdHint || 0);
+  if (hintOrganizationId > 0) return hintOrganizationId;
+
+  const userDistrictOrgId = await resolveOrganizationIdByDistrict(req.user.districtId);
+  if (userDistrictOrgId) return userDistrictOrgId;
+
+  const hintDistrictOrgId = await resolveOrganizationIdByDistrict(districtIdHint);
+  if (hintDistrictOrgId) return hintDistrictOrgId;
+
+  return null;
+}
+
+async function resolveTeacherForCourse(req, teacherUserId, teacherName, organizationIdHint = null, districtIdHint = null) {
   if (req.user.role === "teacher") {
     const [rows] = await pool.query("SELECT id, full_name FROM users WHERE id = ? AND role = 'teacher' LIMIT 1", [req.user.userId]);
     if (rows.length === 0) return null;
@@ -91,10 +121,16 @@ async function resolveTeacherForCourse(req, teacherUserId, teacherName) {
 
   const normalizedTeacherUserId = teacherUserId ? Number(teacherUserId) : 0;
   if (normalizedTeacherUserId > 0) {
-    const scope = buildScopeForAlias(req.user, "u");
+    const teacherOrganizationId = await resolveTeacherOrganizationScope(req, organizationIdHint, districtIdHint);
+    let whereClause = "";
+    const whereParams = [];
+    if (teacherOrganizationId) {
+      whereClause = " AND u.organization_id = ?";
+      whereParams.push(teacherOrganizationId);
+    }
     const [rows] = await pool.query(
-      `SELECT u.id, u.full_name FROM users u WHERE u.id = ? AND u.role = 'teacher' ${scope.clause} LIMIT 1`,
-      [normalizedTeacherUserId, ...scope.params]
+      `SELECT u.id, u.full_name FROM users u WHERE u.id = ? AND u.role = 'teacher' ${whereClause} LIMIT 1`,
+      [normalizedTeacherUserId, ...whereParams]
     );
     if (rows.length === 0) return null;
     return { teacherUserId: rows[0].id, teacherName: rows[0].full_name };
@@ -156,6 +192,43 @@ router.get("/", requireAuth, async (req, res) => {
   }
 });
 
+router.get("/teachers", requireAuth, async (req, res) => {
+  if (!(await canManageCourse(req))) {
+    return res.status(403).json({ message: "Only admin, organization admin, district admin or teacher can create course" });
+  }
+
+  try {
+    if (req.user.role === "teacher") {
+      const [rows] = await pool.query(
+        "SELECT id, full_name, email, organization_id, district_id FROM users WHERE id = ? AND role = 'teacher' LIMIT 1",
+        [req.user.userId]
+      );
+      return res.json(rows);
+    }
+
+    const requestedOrganizationId = req.query.organizationId ? Number(req.query.organizationId) : null;
+    const teacherOrganizationId = await resolveTeacherOrganizationScope(req, requestedOrganizationId, req.user.districtId);
+
+    let whereClause = "";
+    const params = [];
+    if (teacherOrganizationId) {
+      whereClause = " AND u.organization_id = ?";
+      params.push(teacherOrganizationId);
+    }
+
+    const [rows] = await pool.query(
+      `SELECT u.id, u.full_name, u.email, u.organization_id, u.district_id
+       FROM users u
+       WHERE u.role = 'teacher' ${whereClause}
+       ORDER BY u.full_name ASC`,
+      params
+    );
+    return res.json(rows);
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to fetch teachers" });
+  }
+});
+
 router.post("/", requireAuth, async (req, res) => {
   if (!(await canManageCourse(req))) {
     return res.status(403).json({ message: "Only admin, organization admin, district admin or teacher can create course" });
@@ -196,7 +269,7 @@ router.post("/", requireAuth, async (req, res) => {
       return res.status(400).json({ message: "Classroom not found in scope" });
     }
 
-    const resolvedTeacher = await resolveTeacherForCourse(req, teacherUserId, teacherName);
+    const resolvedTeacher = await resolveTeacherForCourse(req, teacherUserId, teacherName, owner.organizationId, owner.districtId);
     if (!resolvedTeacher) {
       return res.status(400).json({ message: "Teacher not found in scope" });
     }
@@ -264,7 +337,7 @@ router.put("/:id", requireAuth, async (req, res) => {
       return res.status(400).json({ message: "Classroom not found in scope" });
     }
 
-    const resolvedTeacher = await resolveTeacherForCourse(req, teacherUserId, teacherName);
+    const resolvedTeacher = await resolveTeacherForCourse(req, teacherUserId, teacherName, owner.organizationId, owner.districtId);
     if (!resolvedTeacher) {
       return res.status(400).json({ message: "Teacher not found in scope" });
     }

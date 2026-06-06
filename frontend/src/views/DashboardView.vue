@@ -74,6 +74,7 @@ const messageMap = {
   "Failed to create course": "创建课程失败",
   "Failed to update course": "更新课程失败",
   "Failed to fetch live rooms": "加载直播间失败",
+  "Failed to fetch teachers": "加载讲师列表失败",
   "Failed to create live room": "创建直播间失败",
   "OPENMEETINGS_ROOM_BASE_URL is not configured": "未配置 OpenMeetings 课堂链接基础地址",
   "Only admin, organization admin, district admin or teacher can create course": "仅系统管理员、机构管理员、学区管理员或讲师可以创建课程",
@@ -134,8 +135,8 @@ const fetchClassrooms = async () => {
 
 const fetchTeachers = async () => {
   if (canSelectScope) {
-    const { data } = await http.get("/admin/users");
-    teachers.value = data.filter((item) => item.role === "teacher");
+    const { data } = await http.get("/courses/teachers");
+    teachers.value = data;
     return;
   }
 
@@ -149,11 +150,9 @@ const fetchTeachers = async () => {
 const teacherOptions = computed(() => {
   if (canSelectScope) {
     const orgId = Number(newCourse.value.organizationId || 0);
-    const districtId = Number(newCourse.value.districtId || 0);
     return teachers.value.filter((item) => {
       const orgOk = !orgId || Number(item.organization_id || 0) === orgId;
-      const districtOk = !districtId || Number(item.district_id || 0) === districtId;
-      return orgOk && districtOk;
+      return orgOk;
     });
   }
   return teachers.value;
@@ -193,11 +192,9 @@ const editClassroomOptions = computed(() => {
 const editTeacherOptions = computed(() => {
   if (canSelectScope) {
     const orgId = Number(editCourse.value.organizationId || 0);
-    const districtId = Number(editCourse.value.districtId || 0);
     return teachers.value.filter((item) => {
       const orgOk = !orgId || Number(item.organization_id || 0) === orgId;
-      const districtOk = !districtId || Number(item.district_id || 0) === districtId;
-      return orgOk && districtOk;
+      return orgOk;
     });
   }
   return teachers.value;
@@ -220,8 +217,6 @@ watch(
   (value, oldValue) => {
     if (value !== oldValue) {
       newCourse.value.classroomId = "";
-      newCourse.value.teacherUserId = "";
-      newCourse.value.teacherName = "";
     }
   }
 );
@@ -251,8 +246,6 @@ watch(
   (value, oldValue) => {
     if (value !== oldValue) {
       editCourse.value.classroomId = "";
-      editCourse.value.teacherUserId = "";
-      editCourse.value.teacherName = "";
     }
   }
 );
