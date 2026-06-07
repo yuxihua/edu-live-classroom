@@ -2,6 +2,7 @@ import crypto from "crypto";
 import express from "express";
 import pool from "../config/db.js";
 import { requireAuth } from "../middleware/auth.js";
+import { createOpenMeetingsJoinLink } from "../services/openmeetings.js";
 
 const router = express.Router();
 
@@ -81,27 +82,64 @@ router.get("/:courseId/join-link", requireAuth, async (req, res) => {
     }
 
     let resolvedMeetingUrl = course.meeting_url;
+    let resolvedProvider = "custom";
+    let resolvedOpenMeetingsRoomId = null;
     if (roomId > 0) {
       const [roomRows] = await pool.query(
-        "SELECT id, meeting_url FROM live_rooms WHERE id = ? AND course_id = ? LIMIT 1",
+        "SELECT id, meeting_url, provider, openmeetings_room_id FROM live_rooms WHERE id = ? AND course_id = ? LIMIT 1",
         [roomId, courseId]
       );
       if (roomRows.length === 0) {
         return res.status(404).json({ message: "Live room not found" });
       }
       resolvedMeetingUrl = roomRows[0].meeting_url;
+      resolvedProvider = String(roomRows[0].provider || "custom").trim().toLowerCase();
+      resolvedOpenMeetingsRoomId = Number(roomRows[0].openmeetings_room_id || 0) || null;
     } else {
       const [roomRows] = await pool.query(
-        "SELECT id, meeting_url FROM live_rooms WHERE course_id = ? ORDER BY id ASC LIMIT 1",
+        "SELECT id, meeting_url, provider, openmeetings_room_id FROM live_rooms WHERE course_id = ? ORDER BY id ASC LIMIT 1",
         [courseId]
       );
       if (roomRows.length > 0) {
         resolvedMeetingUrl = roomRows[0].meeting_url;
+        resolvedProvider = String(roomRows[0].provider || "custom").trim().toLowerCase();
+        resolvedOpenMeetingsRoomId = Number(roomRows[0].openmeetings_room_id || 0) || null;
       }
     }
 
     if (!resolvedMeetingUrl) {
       return res.status(400).json({ message: "Meeting URL not configured" });
+    }
+
+    const looksLikeOpenMeetings = /\/openmeetings(\/|$)/i.test(String(resolvedMeetingUrl || ""));
+    const shouldUseOpenMeetingsHash = resolvedProvider === "openmeetings" || looksLikeOpenMeetings;
+    if (shouldUseOpenMeetingsHash && resolvedOpenMeetingsRoomId) {
+      try {
+        const direct = await createOpenMeetingsJoinLink({
+          roomId: resolvedOpenMeetingsRoomId,
+          user: {
+            userId: req.user.userId,
+            email: req.user.email,
+            role: req.user.role
+          },
+          subject: `${course.title || "Classroom"} 直播课堂`,
+          message: `${course.title || "Classroom"} 进入链接`
+        });
+
+        return res.json({
+          courseId: course.id,
+          title: course.title,
+          joinUrl: direct.joinUrl,
+          provider: "openmeetings",
+          roomId: direct.roomId
+        });
+      } catch (error) {
+        const reason = String(error?.message || "Failed to create OpenMeetings join hash");
+        return res.status(502).json({
+          message: "Failed to generate OpenMeetings join link",
+          detail: reason
+        });
+      }
     }
 
     const ts = Date.now();

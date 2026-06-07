@@ -24,6 +24,43 @@ const buildOpenMeetingsRoomUrl = (roomId, roomBaseUrl = process.env.OPENMEETINGS
   return `${normalizedBaseUrl}/${normalizedRoomId}`;
 };
 
+const resolveOpenMeetingsAppBaseUrl = (roomBaseUrl = process.env.OPENMEETINGS_ROOM_BASE_URL) => {
+  const normalizedBaseUrl = normalizeBaseUrl(roomBaseUrl);
+  if (!normalizedBaseUrl) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(normalizedBaseUrl);
+    parsed.pathname = parsed.pathname.replace(/\/room\/?$/, "") || "/";
+    return parsed.toString().replace(/\/+$/, "");
+  } catch (error) {
+    return normalizedBaseUrl.replace(/\/room\/?$/, "");
+  }
+};
+
+const buildOpenMeetingsHashUrl = ({
+  secureHash,
+  roomBaseUrl = process.env.OPENMEETINGS_ROOM_BASE_URL,
+  language = process.env.OPENMEETINGS_LANGUAGE || "1"
+}) => {
+  const hash = String(secureHash || "").trim();
+  const appBaseUrl = resolveOpenMeetingsAppBaseUrl(roomBaseUrl);
+  if (!hash || !appBaseUrl) {
+    return null;
+  }
+
+  const url = new URL(`${appBaseUrl}/hash`);
+  url.searchParams.set("secure", hash);
+
+  const languageId = Number(language);
+  if (Number.isInteger(languageId) && languageId > 0) {
+    url.searchParams.set("language", String(languageId));
+  }
+
+  return url.toString();
+};
+
 const parseJsonSafely = (text) => {
   if (!text) return null;
   try {
@@ -325,4 +362,72 @@ export const checkOpenMeetingsConnection = async () => {
   };
 };
 
-export { buildOpenMeetingsRoomUrl, getMissingOpenMeetingsConfigMessage, getOpenMeetingsConfig };
+export const createOpenMeetingsJoinLink = async ({
+  roomId,
+  user = {},
+  subject = "Classroom Session",
+  message = "Classroom join link"
+}) => {
+  const config = getOpenMeetingsConfig();
+  const missingMessage = getMissingOpenMeetingsConfigMessage(config);
+  if (missingMessage) {
+    throw new Error(missingMessage);
+  }
+
+  const normalizedRoomId = Number(roomId || 0);
+  if (!Number.isInteger(normalizedRoomId) || normalizedRoomId <= 0) {
+    throw new Error("Invalid OpenMeetings roomId");
+  }
+
+  const sid = await loginOpenMeetings(config);
+  const fallbackName = String(user.email || `user-${user.userId || "guest"}`).split("@")[0] || "guest";
+
+  const invite = {
+    firstname: String(user.firstName || user.fullName || fallbackName || "Guest").slice(0, 80),
+    lastname: String(user.lastName || user.role || "User").slice(0, 80),
+    email: String(user.email || `user-${user.userId || "guest"}@invalid.local`).slice(0, 254),
+    roomId: normalizedRoomId,
+    subject: String(subject || "Classroom Session").slice(0, 255),
+    message: String(message || "Classroom join link").slice(0, 1000),
+    valid: "ONE_TIME"
+  };
+
+  const payload = await openMeetingsRequest(config, "/room/hash", {
+    method: "POST",
+    searchParams: {
+      sid,
+      invite: JSON.stringify(invite),
+      sendmail: false
+    }
+  });
+
+  const resultType = resolveServiceResultType(payload);
+  const secureHash = resolveServiceResultMessage(payload);
+  if (resultType && resultType !== "SUCCESS") {
+    throw new Error(`Failed to create OpenMeetings room hash: ${secureHash || resultType}`);
+  }
+  if (!secureHash) {
+    throw new Error("Failed to create OpenMeetings room hash: empty hash returned");
+  }
+
+  const joinUrl = buildOpenMeetingsHashUrl({
+    secureHash,
+    roomBaseUrl: config.roomBaseUrl
+  });
+  if (!joinUrl) {
+    throw new Error("OpenMeetings hash join URL could not be generated");
+  }
+
+  return {
+    secureHash,
+    joinUrl,
+    roomId: normalizedRoomId
+  };
+};
+
+export {
+  buildOpenMeetingsRoomUrl,
+  buildOpenMeetingsHashUrl,
+  getMissingOpenMeetingsConfigMessage,
+  getOpenMeetingsConfig
+};
