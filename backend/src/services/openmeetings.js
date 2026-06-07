@@ -211,7 +211,7 @@ export const createOpenMeetingsRoom = async ({
   const attemptErrors = [];
   const resolveRoomId = (roomPayload) => {
     const serviceMessage = Number(resolveServiceResultMessage(roomPayload));
-    return Number(roomPayload?.id || roomPayload?.roomId || roomPayload?.room?.id || serviceMessage || 0);
+    return Number(roomPayload?.id || roomPayload?.roomId || roomPayload?.room?.id || roomPayload?.roomDTO?.id || serviceMessage || 0);
   };
 
   const requestAttempts = [];
@@ -303,8 +303,8 @@ export const createOpenMeetingsRoom = async ({
   return {
     roomId,
     meetingUrl,
-    roomName: String(payload.name || roomPayloadBase.name),
-    roomType: normalizeRoomType(payload.type || roomPayloadBase.type),
+    roomName: String(payload?.name || payload?.roomDTO?.name || roomPayloadBase.name),
+    roomType: normalizeRoomType(payload?.type || payload?.roomDTO?.type || roomPayloadBase.type),
     roomPayload: roomPayloadBase
   };
 };
