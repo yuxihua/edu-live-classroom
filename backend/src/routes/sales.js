@@ -156,6 +156,28 @@ async function ensureCourseInScope(scope, courseId) {
   return rows.length > 0;
 }
 
+async function collectDescendantSalesAgentIds(rootSalesUserId) {
+  const descendants = new Set();
+  const queue = [Number(rootSalesUserId || 0)];
+
+  while (queue.length > 0) {
+    const currentId = queue.shift();
+    const [rows] = await pool.query(
+      "SELECT sales_user_id FROM sales_agents WHERE parent_sales_user_id = ?",
+      [currentId]
+    );
+    rows.forEach((item) => {
+      const childId = Number(item.sales_user_id || 0);
+      if (childId > 0 && !descendants.has(childId)) {
+        descendants.add(childId);
+        queue.push(childId);
+      }
+    });
+  }
+
+  return descendants;
+}
+
 router.post("/wechat/notify", async (req, res) => {
   const { outTradeNo, transactionId, status } = req.body || {};
   if (!outTradeNo) {
@@ -315,6 +337,11 @@ router.put("/agents/:salesUserId", requirePermission("sales.agents.manage"), asy
       if (Number(parentRows[0].organization_id || 0) !== organizationId) {
         return res.status(400).json({ message: "parent and child must be in same organization" });
       }
+
+      const descendants = await collectDescendantSalesAgentIds(salesUserId);
+      if (descendants.has(parentSalesUserId)) {
+        return res.status(400).json({ message: "parent sales agent cannot be a descendant" });
+      }
     }
 
     await pool.query(
@@ -327,6 +354,48 @@ router.put("/agents/:salesUserId", requirePermission("sales.agents.manage"), asy
     return res.json({ message: "Sales agent saved" });
   } catch (error) {
     return res.status(500).json({ message: "Failed to save sales agent" });
+  }
+});
+
+router.delete("/agents/:salesUserId", requirePermission("sales.agents.manage"), async (req, res) => {
+  if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
+
+  const scope = await resolveManageScope(req);
+  if (!scope) return res.status(403).json({ message: "Permission denied" });
+
+  const salesUserId = Number(req.params.salesUserId);
+  if (!Number.isInteger(salesUserId) || salesUserId <= 0) {
+    return res.status(400).json({ message: "Invalid salesUserId" });
+  }
+
+  try {
+    const userScoped = buildUserScope(scope, "u");
+    const [salesRows] = await pool.query(
+      `SELECT sa.sales_user_id
+       FROM sales_agents sa
+       INNER JOIN users u ON u.id = sa.sales_user_id
+       WHERE sa.sales_user_id = ? ${userScoped.clause}
+       LIMIT 1`,
+      [salesUserId, ...userScoped.params]
+    );
+    if (salesRows.length === 0) return res.status(403).json({ message: "Permission denied" });
+
+    await pool.query(
+      `UPDATE sales_agents
+       SET parent_sales_user_id = NULL,
+           level_no = GREATEST(level_no - 1, 1)
+       WHERE parent_sales_user_id = ?`,
+      [salesUserId]
+    );
+
+    const [result] = await pool.query("DELETE FROM sales_agents WHERE sales_user_id = ?", [salesUserId]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "sales agent not found" });
+    }
+
+    return res.json({ message: "Sales agent deleted" });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to delete sales agent" });
   }
 });
 

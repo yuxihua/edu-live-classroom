@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import http from "../api/http.js";
+import ConfirmDialog from "../components/ConfirmDialog.vue";
 
 const router = useRouter();
 const activeTab = ref("dashboard");
@@ -52,10 +53,25 @@ const settingForm = ref({ key: "", value: "", category: "general" });
 const permissionForm = ref({ roleName: "teacher" });
 const commissionForm = ref({ organizationId: "" });
 const salesAgentForm = ref({ salesUserId: "", parentSalesUserId: "", levelNo: 1 });
+const selectedSalesAgentId = ref(0);
 const studentSalesForm = ref({ studentUserId: "", salesUserId: "" });
 const manualOrderForm = ref({ courseId: "", buyerUserId: "", studentUserId: "", amountCents: "" });
 const selectedPermissions = ref({});
 const collapsedPermissionGroups = ref({});
+const collapsedSalesAgents = ref({});
+const draggingSalesAgentId = ref(0);
+const dragOverSalesAgentId = ref(0);
+const lastSalesDragMove = ref(null);
+const salesConfirmDialog = ref({
+  visible: false,
+  title: "请确认",
+  message: "",
+  detailItems: [],
+  confirmText: "确认",
+  pending: false,
+  onConfirm: null,
+  onCancel: null
+});
 const currentUser = JSON.parse(localStorage.getItem("user") || "{}");
 
 const roleOptions = ["admin", "org_admin", "district_admin", "teacher", "assistant", "student", "parent"];
@@ -178,6 +194,8 @@ const messageMap = {
   "Invalid districtId": "学区编号无效",
   "Invalid organizationId": "机构编号无效",
   "Invalid userId": "账号编号无效",
+  "parent sales agent cannot be a descendant": "上级销售不能是当前销售的下级",
+  "Failed to delete sales agent": "移除销售关系失败",
   "Invalid setting key": "设置键无效",
   "roleName and permissions are required": "角色和权限不能为空"
 };
@@ -796,9 +814,62 @@ const saveSalesAgent = async () => {
     parentSalesUserId: salesAgentForm.value.parentSalesUserId || null,
     levelNo: Number(salesAgentForm.value.levelNo || 1)
   });
+  lastSalesDragMove.value = null;
+  selectedSalesAgentId.value = 0;
   salesAgentForm.value = { salesUserId: "", parentSalesUserId: "", levelNo: 1 };
   formMessage.value = "销售员关系已保存";
   await fetchSalesAgents();
+};
+
+const setSalesAgentAsRoot = (item) => {
+  const impactedCount = salesDescendantCount(item.sales_user_id);
+  const detailItems = salesDescendantPreviewItems(item.sales_user_id);
+  openSalesConfirmDialog({
+    title: "确认设为顶级销售",
+    message: `确认将 ${salesAgentDisplayName(item)} 调整为顶级销售吗？将影响 ${impactedCount} 名下级的层级路径。`,
+    detailItems,
+    confirmText: "确认调整",
+    onConfirm: async () => {
+      await http.put(`/sales/agents/${item.sales_user_id}`, {
+        parentSalesUserId: null,
+        levelNo: 1
+      });
+      lastSalesDragMove.value = null;
+      selectSalesAgentNode({
+        ...item,
+        parent_sales_user_id: null,
+        level_no: 1
+      });
+      formMessage.value = `${salesAgentDisplayName(item)} 已设为顶级销售`;
+      errorText.value = "";
+      await fetchSalesAgents();
+    }
+  });
+};
+
+const deleteSalesAgent = (item) => {
+  const impactedCount = salesDescendantCount(item.sales_user_id);
+  const detailItems = salesDescendantPreviewItems(item.sales_user_id);
+  openSalesConfirmDialog({
+    title: "确认移除销售关系",
+    message: `确认移除 ${salesAgentDisplayName(item)} 的销售层级关系吗？将影响 ${impactedCount} 名下级（其上级将被重置）。`,
+    detailItems,
+    confirmText: "确认移除",
+    onConfirm: async () => {
+      try {
+        await http.delete(`/sales/agents/${item.sales_user_id}`);
+        lastSalesDragMove.value = null;
+        if (Number(selectedSalesAgentId.value || 0) === Number(item.sales_user_id || 0)) {
+          resetSalesAgentForm();
+        }
+        formMessage.value = `${salesAgentDisplayName(item)} 的销售层级关系已移除`;
+        errorText.value = "";
+        await fetchSalesAgents();
+      } catch (error) {
+        errorText.value = toChineseMessage(error.response?.data?.message, "移除销售关系失败");
+      }
+    }
+  });
 };
 
 const saveStudentSalesBinding = async () => {
@@ -831,6 +902,460 @@ const markSalesOrderPaid = async (id) => {
 const salesUserCandidates = computed(() => users.value.filter((item) => !["student", "parent"].includes(item.role)));
 const studentUserCandidates = computed(() => users.value.filter((item) => item.role === "student"));
 const buyerUserCandidates = computed(() => users.value.filter((item) => ["student", "parent"].includes(item.role)));
+const salesAgentTree = computed(() => {
+  const nodeMap = new Map();
+
+  salesAgents.value.forEach((item) => {
+    nodeMap.set(Number(item.sales_user_id), {
+      ...item,
+      children: []
+    });
+  });
+
+  const roots = [];
+  nodeMap.forEach((node) => {
+    const parentId = Number(node.parent_sales_user_id || 0);
+    if (parentId > 0 && nodeMap.has(parentId) && parentId !== Number(node.sales_user_id)) {
+      nodeMap.get(parentId).children.push(node);
+      return;
+    }
+    roots.push(node);
+  });
+
+  const sortNodes = (nodes) => {
+    nodes.sort((left, right) => {
+      const levelDiff = Number(left.level_no || 0) - Number(right.level_no || 0);
+      if (levelDiff !== 0) return levelDiff;
+      return String(left.sales_name || left.sales_user_id).localeCompare(String(right.sales_name || right.sales_user_id), "zh-Hans-CN");
+    });
+    nodes.forEach((node) => sortNodes(node.children));
+    return nodes;
+  };
+
+  return sortNodes(roots);
+});
+
+const salesTreeStats = computed(() => {
+  return {
+    total: salesAgents.value.length,
+    roots: salesAgentTree.value.length
+  };
+});
+
+const salesAgentById = computed(() => {
+  const map = new Map();
+  salesAgents.value.forEach((item) => {
+    map.set(Number(item.sales_user_id || 0), item);
+  });
+  return map;
+});
+
+const salesAgentDescendantMap = computed(() => {
+  const map = new Map();
+  const walk = (node) => {
+    const descendants = new Set();
+    (node.children || []).forEach((child) => {
+      descendants.add(Number(child.sales_user_id || 0));
+      const childDescendants = walk(child);
+      childDescendants.forEach((id) => descendants.add(id));
+    });
+    map.set(Number(node.sales_user_id || 0), descendants);
+    return descendants;
+  };
+
+  salesAgentTree.value.forEach((root) => walk(root));
+  return map;
+});
+
+const salesDescendantCount = (salesUserId) => {
+  return (salesAgentDescendantMap.value.get(Number(salesUserId || 0)) || new Set()).size;
+};
+
+const salesDescendantPreviewItems = (salesUserId, limit = 5) => {
+  const sourceId = Number(salesUserId || 0);
+  if (!sourceId || limit <= 0) return [];
+
+  const descendants = salesAgentDescendantMap.value.get(sourceId) || new Set();
+  if (descendants.size === 0) return [];
+
+  const childrenByParentId = new Map();
+  salesAgents.value.forEach((item) => {
+    const parentId = item.parent_sales_user_id ? Number(item.parent_sales_user_id) : 0;
+    if (!childrenByParentId.has(parentId)) {
+      childrenByParentId.set(parentId, []);
+    }
+    childrenByParentId.get(parentId).push(item);
+  });
+
+  childrenByParentId.forEach((list) => {
+    list.sort((a, b) => {
+      const nameCompare = salesAgentDisplayName(a).localeCompare(salesAgentDisplayName(b), "zh-Hans-CN");
+      if (nameCompare !== 0) return nameCompare;
+      return Number(a.sales_user_id || 0) - Number(b.sales_user_id || 0);
+    });
+  });
+
+  const previewItems = [];
+  const queue = [...(childrenByParentId.get(sourceId) || [])];
+  while (queue.length > 0 && previewItems.length < limit) {
+    const current = queue.shift();
+    const currentId = Number(current?.sales_user_id || 0);
+    if (descendants.has(currentId)) {
+      previewItems.push(current);
+    }
+    queue.push(...(childrenByParentId.get(currentId) || []));
+  }
+
+  const detailItems = previewItems.map((item) => ({
+    label: salesAgentDisplayName(item),
+    meta: salesAgentBadge(item)
+  }));
+  const remain = Math.max(0, descendants.size - detailItems.length);
+  if (remain > 0) {
+    detailItems.push({
+      label: `其余 ${remain} 人`,
+      meta: "未展开"
+    });
+  }
+  return detailItems;
+};
+
+const salesAgentDisplayName = (item) => item.sales_name || `销售员#${item.sales_user_id}`;
+const salesAgentBadge = (item) => `${item.level_no || "-"}级销售`;
+const hasSalesChildren = (item) => Array.isArray(item?.children) && item.children.length > 0;
+const isSalesAgentCollapsed = (salesUserId) => Boolean(collapsedSalesAgents.value[salesUserId]);
+const isSelectedSalesAgent = (salesUserId) => Number(selectedSalesAgentId.value || 0) === Number(salesUserId || 0);
+const toggleSalesAgentCollapse = (salesUserId) => {
+  collapsedSalesAgents.value = {
+    ...collapsedSalesAgents.value,
+    [salesUserId]: !collapsedSalesAgents.value[salesUserId]
+  };
+};
+
+const canDropSalesAgent = (sourceId, targetId) => {
+  const fromId = Number(sourceId || 0);
+  const toId = Number(targetId || 0);
+  if (!fromId || !toId) return false;
+  if (fromId === toId) return false;
+  const descendants = salesAgentDescendantMap.value.get(fromId) || new Set();
+  return !descendants.has(toId);
+};
+
+const resetSalesConfirmDialog = () => {
+  salesConfirmDialog.value = {
+    visible: false,
+    title: "请确认",
+    message: "",
+    detailItems: [],
+    confirmText: "确认",
+    pending: false,
+    onConfirm: null,
+    onCancel: null
+  };
+};
+
+const openSalesConfirmDialog = ({ title = "请确认", message, detailItems = [], confirmText = "确认", onConfirm, onCancel = null }) => {
+  salesConfirmDialog.value = {
+    visible: true,
+    title,
+    message: String(message || ""),
+    detailItems: Array.isArray(detailItems) ? detailItems : [],
+    confirmText,
+    pending: false,
+    onConfirm,
+    onCancel
+  };
+};
+
+const cancelSalesConfirmDialog = () => {
+  if (salesConfirmDialog.value.pending) return;
+  const onCancel = salesConfirmDialog.value.onCancel;
+  resetSalesConfirmDialog();
+  if (typeof onCancel === "function") {
+    onCancel();
+  }
+};
+
+const confirmSalesConfirmDialog = async () => {
+  const onConfirm = salesConfirmDialog.value.onConfirm;
+  if (typeof onConfirm !== "function") {
+    resetSalesConfirmDialog();
+    return;
+  }
+
+  salesConfirmDialog.value.pending = true;
+  try {
+    await onConfirm();
+  } finally {
+    resetSalesConfirmDialog();
+  }
+};
+
+const applySalesParentChange = async (salesUserId, parentSalesUserId, levelNo, successText, options = {}) => {
+  try {
+    const source = salesAgentById.value.get(Number(salesUserId || 0)) || null;
+    const prevState = source
+      ? {
+          salesUserId: Number(source.sales_user_id || 0),
+          parentSalesUserId: source.parent_sales_user_id ? Number(source.parent_sales_user_id) : null,
+          levelNo: Number(source.level_no || 1),
+          salesName: salesAgentDisplayName(source)
+        }
+      : null;
+
+    await http.put(`/sales/agents/${salesUserId}`, {
+      parentSalesUserId,
+      levelNo
+    });
+
+    if (options.trackUndo && prevState) {
+      const target = parentSalesUserId ? salesAgentById.value.get(Number(parentSalesUserId)) : null;
+      lastSalesDragMove.value = {
+        prevState,
+        changedTo: {
+          parentSalesUserId: parentSalesUserId ? Number(parentSalesUserId) : null,
+          levelNo: Number(levelNo || 1)
+        },
+        targetName: target ? salesAgentDisplayName(target) : "顶级节点"
+      };
+    }
+
+    formMessage.value = successText;
+    errorText.value = "";
+    await fetchSalesAgents();
+  } catch (error) {
+    errorText.value = toChineseMessage(error.response?.data?.message, "更新销售层级失败");
+  }
+};
+
+const undoLastSalesDragMove = async () => {
+  const snapshot = lastSalesDragMove.value;
+  if (!snapshot?.prevState?.salesUserId) return;
+
+  openSalesConfirmDialog({
+    title: "撤销销售层级变更",
+    message: `确认撤销：将 ${snapshot.prevState.salesName} 恢复到原上级关系？`,
+    confirmText: "确认撤销",
+    onConfirm: async () => {
+      await applySalesParentChange(
+        snapshot.prevState.salesUserId,
+        snapshot.prevState.parentSalesUserId,
+        snapshot.prevState.levelNo,
+        `${snapshot.prevState.salesName} 已撤销到上一步关系`
+      );
+      lastSalesDragMove.value = null;
+    }
+  });
+};
+
+const onSalesDragStart = (item) => {
+  draggingSalesAgentId.value = Number(item.sales_user_id || 0);
+  dragOverSalesAgentId.value = 0;
+};
+
+const onSalesDragEnd = () => {
+  draggingSalesAgentId.value = 0;
+  dragOverSalesAgentId.value = 0;
+};
+
+const onSalesDragEnter = (item) => {
+  const targetId = Number(item.sales_user_id || 0);
+  if (!canDropSalesAgent(draggingSalesAgentId.value, targetId)) {
+    dragOverSalesAgentId.value = 0;
+    return;
+  }
+  dragOverSalesAgentId.value = targetId;
+};
+
+const onSalesDrop = async (item) => {
+  const sourceId = Number(draggingSalesAgentId.value || 0);
+  const targetId = Number(item.sales_user_id || 0);
+  if (!canDropSalesAgent(sourceId, targetId)) {
+    onSalesDragEnd();
+    return;
+  }
+
+  const target = salesAgentById.value.get(targetId);
+  const source = salesAgentById.value.get(sourceId);
+  if (!target || !source) {
+    onSalesDragEnd();
+    return;
+  }
+
+  const nextLevel = Math.min(3, Number(target.level_no || 1) + 1);
+  const impactedCount = salesDescendantCount(sourceId);
+  const detailItems = salesDescendantPreviewItems(sourceId);
+  openSalesConfirmDialog({
+    title: "确认调整销售层级",
+    message: `确认将 ${salesAgentDisplayName(source)} 调整到 ${salesAgentDisplayName(target)} 下级吗？将同时移动 ${impactedCount} 名下级。`,
+    detailItems,
+    confirmText: "确认调整",
+    onCancel: () => {
+      onSalesDragEnd();
+    },
+    onConfirm: async () => {
+      await applySalesParentChange(
+        sourceId,
+        targetId,
+        nextLevel,
+        `${salesAgentDisplayName(source)} 已拖拽调整到 ${salesAgentDisplayName(target)} 下级`,
+        { trackUndo: true }
+      );
+      onSalesDragEnd();
+    }
+  });
+};
+
+const onSalesDropToRoot = async () => {
+  const sourceId = Number(draggingSalesAgentId.value || 0);
+  if (!sourceId) return;
+  const source = salesAgentById.value.get(sourceId);
+  if (!source) {
+    onSalesDragEnd();
+    return;
+  }
+
+  const impactedCount = salesDescendantCount(sourceId);
+  const detailItems = salesDescendantPreviewItems(sourceId);
+  openSalesConfirmDialog({
+    title: "确认设为顶级销售",
+    message: `确认将 ${salesAgentDisplayName(source)} 调整为顶级销售吗？将同时移动 ${impactedCount} 名下级。`,
+    detailItems,
+    confirmText: "确认调整",
+    onCancel: () => {
+      onSalesDragEnd();
+    },
+    onConfirm: async () => {
+      await applySalesParentChange(sourceId, null, 1, `${salesAgentDisplayName(source)} 已设为顶级销售`, { trackUndo: true });
+      onSalesDragEnd();
+    }
+  });
+};
+
+const resetSalesAgentForm = () => {
+  selectedSalesAgentId.value = 0;
+  salesAgentForm.value = { salesUserId: "", parentSalesUserId: "", levelNo: 1 };
+};
+
+const selectSalesAgentNode = (item) => {
+  selectedSalesAgentId.value = Number(item.sales_user_id || 0);
+  salesAgentForm.value = {
+    salesUserId: String(item.sales_user_id || ""),
+    parentSalesUserId: item.parent_sales_user_id ? String(item.parent_sales_user_id) : "",
+    levelNo: Number(item.level_no || 1)
+  };
+  formMessage.value = `正在编辑 ${salesAgentDisplayName(item)} 的层级关系`;
+  errorText.value = "";
+};
+
+const prepareCreateChildSalesAgent = (item) => {
+  selectedSalesAgentId.value = 0;
+  salesAgentForm.value = {
+    salesUserId: "",
+    parentSalesUserId: String(item.sales_user_id || ""),
+    levelNo: Math.min(3, Number(item.level_no || 1) + 1)
+  };
+  formMessage.value = `正在为 ${salesAgentDisplayName(item)} 新增下级销售`;
+  errorText.value = "";
+};
+
+const selectedSalesAgentDescendantIds = computed(() => {
+  const targetId = Number(selectedSalesAgentId.value || 0);
+  if (!targetId) return new Set();
+
+  const result = new Set();
+  const collect = (nodes) => {
+    nodes.forEach((node) => {
+      if (Number(node.sales_user_id) === targetId) {
+        const walk = (children) => {
+          children.forEach((child) => {
+            result.add(Number(child.sales_user_id));
+            walk(child.children || []);
+          });
+        };
+        walk(node.children || []);
+      } else {
+        collect(node.children || []);
+      }
+    });
+  };
+
+  collect(salesAgentTree.value);
+  return result;
+});
+
+const availableParentSalesAgents = computed(() => {
+  const currentId = Number(selectedSalesAgentId.value || 0);
+  return salesAgents.value.filter((item) => {
+    const candidateId = Number(item.sales_user_id || 0);
+    if (!currentId) return true;
+    if (candidateId === currentId) return false;
+    return !selectedSalesAgentDescendantIds.value.has(candidateId);
+  });
+});
+
+const forbiddenSalesUserCandidateIds = computed(() => {
+  const blocked = new Set();
+  const currentId = Number(selectedSalesAgentId.value || 0);
+  const parentId = Number(salesAgentForm.value.parentSalesUserId || 0);
+
+  if (currentId > 0) {
+    blocked.add(currentId);
+    selectedSalesAgentDescendantIds.value.forEach((item) => blocked.add(Number(item)));
+  }
+
+  if (parentId > 0) {
+    let cursor = salesAgentById.value.get(parentId);
+    while (cursor) {
+      blocked.add(Number(cursor.sales_user_id || 0));
+      const nextParentId = Number(cursor.parent_sales_user_id || 0);
+      cursor = nextParentId > 0 ? salesAgentById.value.get(nextParentId) : null;
+    }
+  }
+
+  return blocked;
+});
+
+const availableSalesUserCandidates = computed(() => {
+  const currentId = Number(selectedSalesAgentId.value || 0);
+  if (currentId > 0) {
+    return salesUserCandidates.value;
+  }
+  return salesUserCandidates.value.filter((item) => !forbiddenSalesUserCandidateIds.value.has(Number(item.id || 0)));
+});
+
+const setSalesTreeCollapsed = (collapsed) => {
+  const next = {};
+  const collect = (nodes) => {
+    nodes.forEach((node) => {
+      if (hasSalesChildren(node)) {
+        next[node.sales_user_id] = collapsed;
+        collect(node.children);
+      }
+    });
+  };
+  collect(salesAgentTree.value);
+  collapsedSalesAgents.value = next;
+};
+
+const salesAgentTreeRows = computed(() => {
+  const rows = [];
+  const travel = (nodes, depth = 0) => {
+    nodes.forEach((node) => {
+      rows.push({
+        ...node,
+        depth,
+        hasChildren: hasSalesChildren(node),
+        collapsed: isSalesAgentCollapsed(node.sales_user_id)
+      });
+      if (hasSalesChildren(node) && !isSalesAgentCollapsed(node.sales_user_id)) {
+        travel(node.children, depth + 1);
+      }
+    });
+  };
+  travel(salesAgentTree.value);
+  return rows;
+});
 const commissionRulesByLevel = computed(() => {
   const groups = { 1: [], 2: [], 3: [] };
   salesCommissionRules.value.forEach((item) => {
@@ -925,6 +1450,31 @@ watch(
   () => {
     applyPermissionsForRole();
   }
+);
+
+watch(
+  salesAgentTree,
+  (tree) => {
+    const validKeys = new Set();
+    const collect = (nodes) => {
+      nodes.forEach((node) => {
+        if (hasSalesChildren(node)) {
+          validKeys.add(String(node.sales_user_id));
+          collect(node.children);
+        }
+      });
+    };
+    collect(tree);
+
+    const next = {};
+    Object.keys(collapsedSalesAgents.value).forEach((key) => {
+      if (validKeys.has(String(key))) {
+        next[key] = collapsedSalesAgents.value[key];
+      }
+    });
+    collapsedSalesAgents.value = next;
+  },
+  { immediate: true }
 );
 
 const logout = () => {
@@ -1186,26 +1736,77 @@ watch(
       <section v-else-if="activeSalesTab === 'agents'" class="sales-block">
         <h3>销售员层级关系</h3>
         <form class="form form-wide" @submit.prevent="saveSalesAgent">
-          <select v-model="salesAgentForm.salesUserId" required>
+          <select v-model="salesAgentForm.salesUserId" :disabled="Boolean(selectedSalesAgentId)" required>
             <option value="">选择销售员</option>
-            <option v-for="item in salesUserCandidates" :key="item.id" :value="item.id">{{ item.full_name }} / {{ item.role }}</option>
+            <option v-for="item in availableSalesUserCandidates" :key="item.id" :value="item.id">{{ item.full_name }} / {{ item.role }}</option>
           </select>
           <select v-model="salesAgentForm.parentSalesUserId">
             <option value="">上级销售（无）</option>
-            <option v-for="item in salesAgents" :key="item.sales_user_id" :value="item.sales_user_id">{{ item.sales_name || item.sales_user_id }}</option>
+            <option v-for="item in availableParentSalesAgents" :key="item.sales_user_id" :value="item.sales_user_id">{{ item.sales_name || item.sales_user_id }}</option>
           </select>
           <select v-model="salesAgentForm.levelNo">
             <option :value="1">一级销售</option>
             <option :value="2">二级销售</option>
             <option :value="3">三级销售</option>
           </select>
-          <button type="submit">保存关系</button>
+          <button type="submit">{{ selectedSalesAgentId ? '更新关系' : '保存关系' }}</button>
+          <button v-if="selectedSalesAgentId" type="button" class="ghost" @click="resetSalesAgentForm">取消编辑</button>
         </form>
-        <ul class="list compact">
-          <li v-for="item in salesAgents" :key="item.sales_user_id">
-            <span>{{ item.sales_name || '-' }} / {{ item.level_no }}级 / 上级：{{ item.parent_sales_name || '无' }}</span>
-          </li>
-        </ul>
+        <div class="sales-tree-toolbar">
+          <small>共 {{ salesTreeStats.total }} 名销售员，顶层 {{ salesTreeStats.roots }} 名</small>
+          <div class="inline-actions">
+            <button v-if="lastSalesDragMove" type="button" class="ghost tree-action" @click="undoLastSalesDragMove">撤销上一步</button>
+            <button type="button" class="ghost tree-action" @click="setSalesTreeCollapsed(false)">全部展开</button>
+            <button type="button" class="ghost tree-action" @click="setSalesTreeCollapsed(true)">全部收起</button>
+          </div>
+        </div>
+        <div v-if="salesAgentTree.length" class="sales-tree">
+          <div class="sales-root-drop" @dragover.prevent @drop.prevent="onSalesDropToRoot">
+            拖到这里可设为顶级销售
+          </div>
+          <ul class="sales-tree-list root flat">
+            <li v-for="item in salesAgentTreeRows" :key="item.sales_user_id" class="sales-tree-node">
+              <div
+                class="sales-tree-card"
+                :class="{ selected: isSelectedSalesAgent(item.sales_user_id), 'drag-source': draggingSalesAgentId === item.sales_user_id, 'drop-target': dragOverSalesAgentId === item.sales_user_id }"
+                :style="{ marginLeft: `${item.depth * 24}px` }"
+                draggable="true"
+                @dragstart="onSalesDragStart(item)"
+                @dragend="onSalesDragEnd"
+                @dragover.prevent
+                @dragenter.prevent="onSalesDragEnter(item)"
+                @drop.prevent="onSalesDrop(item)"
+                @click="selectSalesAgentNode(item)"
+              >
+                <div class="sales-tree-main">
+                  <button
+                    v-if="item.hasChildren"
+                    type="button"
+                    class="tree-toggle"
+                    @click.stop="toggleSalesAgentCollapse(item.sales_user_id)"
+                  >
+                    {{ item.collapsed ? '+' : '-' }}
+                  </button>
+                  <span v-else class="tree-toggle placeholder"></span>
+                  <div>
+                    <strong>{{ salesAgentDisplayName(item) }}</strong>
+                    <small>{{ salesAgentBadge(item) }}</small>
+                  </div>
+                </div>
+                <div class="sales-tree-side">
+                  <span>{{ item.parent_sales_name ? `上级：${item.parent_sales_name}` : '顶级节点' }}</span>
+                  <div class="inline-actions">
+                    <button type="button" class="ghost tree-action" @click.stop="selectSalesAgentNode(item)">编辑</button>
+                    <button type="button" class="ghost tree-action" @click.stop="prepareCreateChildSalesAgent(item)">新增下级</button>
+                    <button v-if="item.parent_sales_user_id" type="button" class="ghost tree-action" @click.stop="setSalesAgentAsRoot(item)">设为顶级</button>
+                    <button type="button" class="danger tree-action" @click.stop="deleteSalesAgent(item)">移除关系</button>
+                  </div>
+                </div>
+              </div>
+            </li>
+          </ul>
+        </div>
+        <p v-else class="rank-empty">暂无销售层级数据</p>
       </section>
 
       <section v-else-if="activeSalesTab === 'bindings'" class="sales-block">
@@ -1441,6 +2042,17 @@ watch(
         </li>
       </ul>
     </section>
+
+    <ConfirmDialog
+      :visible="salesConfirmDialog.visible"
+      :title="salesConfirmDialog.title"
+      :message="salesConfirmDialog.message"
+      :detail-items="salesConfirmDialog.detailItems"
+      :confirm-text="salesConfirmDialog.confirmText"
+      :pending="salesConfirmDialog.pending"
+      @cancel="cancelSalesConfirmDialog"
+      @confirm="confirmSalesConfirmDialog"
+    />
   </main>
 </template>
 
@@ -1673,6 +2285,140 @@ input, select, textarea {
   border: 1px solid #e5e7eb;
   border-radius: 12px;
   padding: 12px;
+}
+
+.sales-tree-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: #64748b;
+}
+
+.sales-tree {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.sales-root-drop {
+  border: 1px dashed #94a3b8;
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  color: #475569;
+  background: #f8fafc;
+  text-align: center;
+  font-size: 12px;
+}
+
+.sales-tree-list {
+  list-style: none;
+  margin: 0;
+  padding-left: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.sales-tree-list.flat {
+  gap: 8px;
+}
+
+.sales-tree-list.branch {
+  margin-top: 10px;
+  margin-left: 22px;
+  padding-left: 18px;
+  border-left: 2px solid #cbd5e1;
+}
+
+.sales-tree-node {
+  position: relative;
+}
+
+.sales-tree-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #dbeafe;
+  background: #ffffff;
+}
+
+.sales-tree-card.selected {
+  border-color: #0f766e;
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.12);
+  background: #f0fdfa;
+}
+
+.sales-tree-card.drag-source {
+  opacity: 0.6;
+}
+
+.sales-tree-card.drop-target {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.18);
+}
+
+.sales-tree-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sales-tree-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.tree-toggle {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #0f766e;
+  color: #fff;
+  flex: 0 0 24px;
+}
+
+.tree-toggle.placeholder {
+  background: transparent;
+  border: 1px dashed #cbd5e1;
+  color: transparent;
+}
+
+.tree-action {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+select:disabled {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.sales-tree-card strong {
+  display: block;
+  color: #0f172a;
+}
+
+.sales-tree-card small {
+  color: #0f766e;
+}
+
+.sales-tree-card span {
+  color: #64748b;
+  white-space: nowrap;
 }
 
 .sales-summary-grid {
