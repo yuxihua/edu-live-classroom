@@ -1,6 +1,8 @@
 CREATE DATABASE IF NOT EXISTS edu_live_classroom CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE edu_live_classroom;
 
+SET @db = DATABASE();
+
 CREATE TABLE IF NOT EXISTS users (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   full_name VARCHAR(120) NOT NULL,
