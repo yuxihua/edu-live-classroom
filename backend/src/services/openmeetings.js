@@ -128,6 +128,16 @@ const normalizeRoomType = (value) => {
   return supported.has(normalized) ? normalized : "conference";
 };
 
+const toOpenMeetingsRoomTypeEnum = (value) => {
+  const normalized = normalizeRoomType(value);
+  const map = {
+    conference: "CONFERENCE",
+    presentation: "PRESENTATION",
+    interview: "INTERVIEW"
+  };
+  return map[normalized] || "CONFERENCE";
+};
+
 export const createOpenMeetingsRoom = async ({
   name,
   type = "conference",
@@ -145,14 +155,22 @@ export const createOpenMeetingsRoom = async ({
   }
 
   const sid = await loginOpenMeetings(config);
+  const normalizedRoomType = normalizeRoomType(type);
   const roomPayloadBase = {
     name: String(name || "").trim(),
-    type: normalizeRoomType(type),
+    type: normalizedRoomType,
     capacity: Number.isFinite(Number(capacity)) && Number(capacity) > 0 ? Number(capacity) : 25,
     comment: String(comment || "").trim(),
     appointment: false,
     moderated: Boolean(moderated),
-    public: Boolean(isPublic),
+    isPublic: Boolean(isPublic),
+    demo: false,
+    closed: false,
+    waitModerator: false,
+    allowUserQuestions: true,
+    allowRecording: true,
+    waitRecording: false,
+    audioOnly: false,
     externalType: String(externalType || "edu-live-classroom").trim(),
     externalId: String(externalId || "").trim()
   };
@@ -163,23 +181,29 @@ export const createOpenMeetingsRoom = async ({
 
   const roomTypeNumberMap = {
     conference: 1,
-    presentation: 2,
-    interview: 3
+    presentation: 3,
+    interview: 4
   };
 
   const roomPayloadCandidates = [
+    {
+      ...roomPayloadBase,
+      type: toOpenMeetingsRoomTypeEnum(roomPayloadBase.type)
+    },
     roomPayloadBase,
     {
       name: roomPayloadBase.name,
-      type: roomPayloadBase.type,
+      type: toOpenMeetingsRoomTypeEnum(roomPayloadBase.type),
       capacity: roomPayloadBase.capacity,
-      comment: roomPayloadBase.comment
+      comment: roomPayloadBase.comment,
+      isPublic: Boolean(roomPayloadBase.isPublic)
     },
     {
       name: roomPayloadBase.name,
       type: roomTypeNumberMap[roomPayloadBase.type] || 1,
       capacity: roomPayloadBase.capacity,
-      comment: roomPayloadBase.comment
+      comment: roomPayloadBase.comment,
+      isPublic: Boolean(roomPayloadBase.isPublic)
     }
   ];
 
