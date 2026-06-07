@@ -1,7 +1,8 @@
 <script setup>
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import http from "../api/http.js";
+import ConfirmDialog from "../components/ConfirmDialog.vue";
 
 const router = useRouter();
 const courses = ref([]);
@@ -31,6 +32,33 @@ const selectedRoomIdByCourse = ref({});
 const liveRoomsByCourse = ref({});
 const purchaseStudentId = ref("");
 const me = ref({});
+const creatingRoom = ref(false);
+const checkingOpenMeetings = ref(false);
+const copiedState = ref({ key: "", at: 0 });
+const openMeetingsHealth = ref({
+  checked: false,
+  ok: false,
+  message: "未检测",
+  checkedAt: "",
+  durationMs: 0,
+  failureCount: 0,
+  lastSuccessAt: "",
+  apiBaseUrl: "",
+  roomBaseUrl: ""
+});
+const liveRoomDialog = ref({
+  visible: false,
+  courseId: 0,
+  courseTitle: ""
+});
+const liveRoomForm = ref({
+  provider: "openmeetings",
+  name: "",
+  roomType: "conference",
+  capacity: 25,
+  comment: "",
+  meetingUrl: ""
+});
 
 const user = JSON.parse(localStorage.getItem("user") || "{}");
 const canCreateCourse = ["admin", "org_admin", "district_admin", "teacher"].includes(user.role);
@@ -76,7 +104,14 @@ const messageMap = {
   "Failed to fetch live rooms": "加载直播间失败",
   "Failed to fetch teachers": "加载讲师列表失败",
   "Failed to create live room": "创建直播间失败",
+  "OPENMEETINGS_API_BASE_URL is not configured": "未配置 OpenMeetings 接口地址",
+  "OPENMEETINGS_API_USER is not configured": "未配置 OpenMeetings 接口账号",
+  "OPENMEETINGS_API_PASS is not configured": "未配置 OpenMeetings 接口密码",
   "OPENMEETINGS_ROOM_BASE_URL is not configured": "未配置 OpenMeetings 课堂链接基础地址",
+  "meetingUrl is required when provider is custom": "选择自定义链接时必须填写直播间链接",
+  "name is required": "请填写直播间名称",
+  "Only admin, organization admin, district admin or teacher can check OpenMeetings health": "仅系统管理员、机构管理员、学区管理员或讲师可检测 OpenMeetings 接口",
+  "Failed to check OpenMeetings health": "检测 OpenMeetings 接口失败",
   "Only admin, organization admin, district admin or teacher can create course": "仅系统管理员、机构管理员、学区管理员或讲师可以创建课程",
   "Only admin, organization admin, district admin or teacher can update course": "仅系统管理员、机构管理员、学区管理员或讲师可以更新课程",
   "Only admin, organization admin, district admin or teacher can delete course": "仅系统管理员、机构管理员、学区管理员或讲师可以删除课程",
@@ -103,6 +138,7 @@ const toChineseMessage = (message, fallback) => {
 
 const roleText = roleLabelMap[user.role] || user.role || "未知角色";
 const canOpenAdminCenter = ["admin", "org_admin", "district_admin"].includes(user.role);
+let healthPollTimer = null;
 
 const toDateTimeLocal = (value) => {
   if (!value) return "";
@@ -290,6 +326,143 @@ const fetchCourses = async () => {
 
 const goClassroom = (id) => router.push(`/classroom/${id}`);
 
+const liveRoomProviderText = (room) => {
+  const provider = String(room?.provider || (room?.openmeetings_room_id ? "openmeetings" : "custom"));
+  return provider === "openmeetings" ? "OpenMeetings" : "自定义链接";
+};
+
+const liveRoomMetaText = (room) => {
+  const parts = [liveRoomProviderText(room)];
+  if (room?.room_type) {
+    parts.push(`类型：${room.room_type}`);
+  }
+  if (room?.openmeetings_room_id) {
+    parts.push(`房间ID：${room.openmeetings_room_id}`);
+  }
+  return parts.join(" / ");
+};
+
+const copyText = async (value, key) => {
+  const text = String(value || "").trim();
+  if (!text) return;
+
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "readonly");
+      textarea.style.position = "absolute";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+    copiedState.value = { key: String(key || ""), at: Date.now() };
+  } catch (error) {
+    errorText.value = "复制失败，请手动复制";
+  }
+};
+
+const copiedRecently = (key) => {
+  return copiedState.value.key === String(key || "") && Date.now() - Number(copiedState.value.at || 0) < 2000;
+};
+
+const openMeetingsDiagnosticsText = computed(() => {
+  const lines = [
+    `OpenMeetings状态：${openMeetingsHealth.value.ok ? "正常" : "异常"}`,
+    `最近检测：${healthCheckedAtText.value || "-"}`,
+    `检测耗时：${openMeetingsHealth.value.durationMs || 0}ms`,
+    `连续失败：${openMeetingsHealth.value.failureCount || 0}次`,
+    `最近成功：${healthLastSuccessAtText.value || "-"}`,
+    `接口地址：${openMeetingsHealth.value.apiBaseUrl || "-"}`,
+    `房间地址：${openMeetingsHealth.value.roomBaseUrl || "-"}`
+  ];
+  return lines.join("\n");
+});
+
+const healthCheckedAtText = computed(() => {
+  if (!openMeetingsHealth.value.checkedAt) return "";
+  const date = new Date(openMeetingsHealth.value.checkedAt);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("zh-CN", { hour12: false });
+});
+
+const healthLastSuccessAtText = computed(() => {
+  if (!openMeetingsHealth.value.lastSuccessAt) return "";
+  const date = new Date(openMeetingsHealth.value.lastSuccessAt);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("zh-CN", { hour12: false });
+});
+
+const showHealthAlert = computed(() => {
+  return canCreateCourse && openMeetingsHealth.value.checked && !openMeetingsHealth.value.ok;
+});
+
+const showCriticalHealthAlert = computed(() => {
+  return showHealthAlert.value && Number(openMeetingsHealth.value.failureCount || 0) >= 3;
+});
+
+const copyOpenMeetingsDiagnostics = async () => {
+  await copyText(openMeetingsDiagnosticsText.value, "openmeetings-diagnostics");
+};
+
+const checkOpenMeetingsHealth = async () => {
+  if (checkingOpenMeetings.value) return;
+  checkingOpenMeetings.value = true;
+  const startedAt = Date.now();
+  try {
+    const { data } = await http.get("/courses/openmeetings/health");
+    const finishedAt = Date.now();
+    openMeetingsHealth.value = {
+      ...openMeetingsHealth.value,
+      checked: true,
+      ok: Boolean(data?.ok),
+      message: data?.ok ? "连接成功，可直接创建 OpenMeetings 直播间" : "连接失败",
+      checkedAt: new Date(finishedAt).toISOString(),
+      durationMs: finishedAt - startedAt,
+      failureCount: data?.ok ? 0 : Number(openMeetingsHealth.value.failureCount || 0),
+      lastSuccessAt: data?.ok ? new Date(finishedAt).toISOString() : String(openMeetingsHealth.value.lastSuccessAt || ""),
+      apiBaseUrl: String(data?.apiBaseUrl || ""),
+      roomBaseUrl: String(data?.roomBaseUrl || "")
+    };
+  } catch (error) {
+    const finishedAt = Date.now();
+    const nextFailureCount = Number(openMeetingsHealth.value.failureCount || 0) + 1;
+    openMeetingsHealth.value = {
+      ...openMeetingsHealth.value,
+      checked: true,
+      ok: false,
+      message: toChineseMessage(error.response?.data?.message, "检测 OpenMeetings 接口失败"),
+      checkedAt: new Date(finishedAt).toISOString(),
+      durationMs: finishedAt - startedAt,
+      failureCount: nextFailureCount,
+      apiBaseUrl: "",
+      roomBaseUrl: ""
+    };
+  } finally {
+    checkingOpenMeetings.value = false;
+  }
+};
+
+const stopHealthPolling = () => {
+  if (healthPollTimer) {
+    clearInterval(healthPollTimer);
+    healthPollTimer = null;
+  }
+};
+
+const startHealthPolling = () => {
+  if (healthPollTimer) return;
+  healthPollTimer = setInterval(() => {
+    if (!checkingOpenMeetings.value) {
+      checkOpenMeetingsHealth();
+    }
+  }, 60 * 1000);
+};
+
 const fetchLiveRooms = async (courseId) => {
   try {
     const { data } = await http.get(`/courses/${courseId}/live-rooms`);
@@ -305,15 +478,62 @@ const fetchLiveRooms = async (courseId) => {
   }
 };
 
-const createLiveRoom = async (courseId) => {
-  const name = window.prompt("请输入直播间名称");
-  const meetingUrl = window.prompt("请输入直播间链接");
-  if (!name || !meetingUrl) return;
+const resetLiveRoomForm = () => {
+  liveRoomForm.value = {
+    provider: "openmeetings",
+    name: "",
+    roomType: "conference",
+    capacity: 25,
+    comment: "",
+    meetingUrl: ""
+  };
+};
+
+const openLiveRoomDialog = (course) => {
+  liveRoomDialog.value = {
+    visible: true,
+    courseId: Number(course.id || 0),
+    courseTitle: String(course.title || "")
+  };
+  liveRoomForm.value = {
+    provider: "openmeetings",
+    name: `${course.title || "课程"}直播间`,
+    roomType: "conference",
+    capacity: 25,
+    comment: course.subject ? `${course.subject} / ${course.teacher_name || ""}` : `${course.teacher_name || ""}`.trim(),
+    meetingUrl: ""
+  };
+};
+
+const closeLiveRoomDialog = () => {
+  if (creatingRoom.value) return;
+  liveRoomDialog.value = {
+    visible: false,
+    courseId: 0,
+    courseTitle: ""
+  };
+  resetLiveRoomForm();
+};
+
+const createLiveRoom = async () => {
+  const courseId = Number(liveRoomDialog.value.courseId || 0);
+  if (!courseId) return;
+  creatingRoom.value = true;
   try {
-    await http.post(`/courses/${courseId}/live-rooms`, { name, meetingUrl });
+    await http.post(`/courses/${courseId}/live-rooms`, {
+      provider: liveRoomForm.value.provider,
+      name: liveRoomForm.value.name,
+      roomType: liveRoomForm.value.roomType,
+      capacity: Number(liveRoomForm.value.capacity || 25),
+      comment: liveRoomForm.value.comment,
+      meetingUrl: liveRoomForm.value.provider === "custom" ? liveRoomForm.value.meetingUrl : ""
+    });
     await fetchLiveRooms(courseId);
+    closeLiveRoomDialog();
   } catch (error) {
     errorText.value = toChineseMessage(error.response?.data?.message, "创建直播间失败");
+  } finally {
+    creatingRoom.value = false;
   }
 };
 
@@ -505,11 +725,19 @@ onMounted(fetchCourses);
 onMounted(async () => {
   await fetchProfile();
   await fetchTeachers();
+  if (canCreateCourse) {
+    await checkOpenMeetingsHealth();
+    startHealthPolling();
+  }
   if (canSelectScope) {
     await fetchOrganizations();
     await fetchDistricts();
     await fetchClassrooms();
   }
+});
+
+onBeforeUnmount(() => {
+  stopHealthPolling();
 });
 </script>
 
@@ -525,6 +753,17 @@ onMounted(async () => {
         <button @click="logout">退出登录</button>
       </div>
     </header>
+
+    <section v-if="showHealthAlert" :class="['status-alert', showCriticalHealthAlert ? 'critical' : 'warning']">
+      <div class="status-alert-copy">
+        <strong>{{ showCriticalHealthAlert ? 'OpenMeetings 连续故障' : 'OpenMeetings 接口异常' }}：</strong>
+        <span>{{ openMeetingsHealth.message }}</span>
+        <small v-if="showCriticalHealthAlert">建议立即检查 API 地址、账号密码和 OpenMeetings 服务状态。</small>
+      </div>
+      <button class="secondary mini" :disabled="checkingOpenMeetings" @click="checkOpenMeetingsHealth">
+        {{ checkingOpenMeetings ? '检测中...' : '立即重试' }}
+      </button>
+    </section>
 
     <section class="panel" v-if="canCreateCourse">
       <h2>创建课程</h2>
@@ -555,8 +794,30 @@ onMounted(async () => {
           {{ creating ? "创建中..." : "创建课程" }}
         </button>
       </form>
-      <p class="hint">若系统已配置 OpenMeetings，将自动生成课堂链接；未配置时也可先创建课程，后续再补链接或添加直播间。</p>
+      <p class="hint">课程创建后可直接通过 OpenMeetings 9.0 接口新增直播间；若暂未接通，也可切换为自定义链接。</p>
       <p v-if="createError" class="error">{{ createError }}</p>
+    </section>
+
+    <section class="panel" v-if="canCreateCourse">
+      <h2>OpenMeetings 接口状态</h2>
+      <p :class="openMeetingsHealth.ok ? 'success' : 'error'">{{ openMeetingsHealth.message }}</p>
+      <p v-if="openMeetingsHealth.checked" class="health-meta">
+        最近检测：{{ healthCheckedAtText || '-' }} / 耗时：{{ openMeetingsHealth.durationMs || 0 }}ms
+      </p>
+      <p v-if="openMeetingsHealth.failureCount > 0" class="health-meta warning-text">
+        连续失败：{{ openMeetingsHealth.failureCount }} 次
+      </p>
+      <p v-if="healthLastSuccessAtText" class="health-meta">
+        最近成功：{{ healthLastSuccessAtText }}
+      </p>
+      <p v-if="openMeetingsHealth.apiBaseUrl" class="health-meta">接口地址：{{ openMeetingsHealth.apiBaseUrl }}</p>
+      <p v-if="openMeetingsHealth.roomBaseUrl" class="health-meta">房间地址：{{ openMeetingsHealth.roomBaseUrl }}</p>
+      <div class="health-actions">
+        <button class="secondary" :disabled="checkingOpenMeetings" @click="checkOpenMeetingsHealth">
+          {{ checkingOpenMeetings ? '检测中...' : '重新检测' }}
+        </button>
+        <button class="secondary" @click="copyOpenMeetingsDiagnostics">复制诊断信息</button>
+      </div>
     </section>
 
     <section class="panel" v-if="canCreateCourse && editingCourseId">
@@ -626,7 +887,7 @@ onMounted(async () => {
             <button v-if="isStudent && !course.enrolled" @click="enrollCourse(course.id)">报名</button>
             <button v-if="canCreateCourse" @click="openEditCourse(course)">编辑</button>
             <button @click="fetchLiveRooms(course.id)">查看直播间</button>
-            <button v-if="canCreateCourse" @click="createLiveRoom(course.id)">新增直播间</button>
+            <button v-if="canCreateCourse" @click="openLiveRoomDialog(course)">新增直播间</button>
             <button @click="joinRoom(course.id)">进入直播间</button>
             <button
               v-if="canCreateCourse"
@@ -639,16 +900,76 @@ onMounted(async () => {
           <div v-if="liveRoomsByCourse[course.id]?.length" class="room-list">
             <strong>直播间列表</strong>
             <div v-for="room in liveRoomsByCourse[course.id]" :key="room.id" class="room-item">
-              <label>
+              <label class="room-info">
                 <input type="radio" :name="`room-${course.id}`" :value="room.id" v-model="selectedRoomIdByCourse[course.id]" />
-                {{ room.name }}
+                <span>{{ room.name }}</span>
+                <small>{{ liveRoomMetaText(room) }}</small>
               </label>
-              <a :href="room.meeting_url" target="_blank">打开链接</a>
+              <div class="room-actions">
+                <a :href="room.meeting_url" target="_blank">打开链接</a>
+                <button type="button" class="secondary mini" @click="copyText(room.meeting_url, `room-link-${room.id}`)">
+                  {{ copiedRecently(`room-link-${room.id}`) ? '已复制' : '复制链接' }}
+                </button>
+                <button
+                  v-if="room.openmeetings_room_id"
+                  type="button"
+                  class="secondary mini"
+                  @click="copyText(room.openmeetings_room_id, `room-id-${room.id}`)"
+                >
+                  {{ copiedRecently(`room-id-${room.id}`) ? '已复制' : '复制房间ID' }}
+                </button>
+              </div>
             </div>
           </div>
         </li>
       </ul>
     </section>
+
+    <ConfirmDialog
+      :visible="liveRoomDialog.visible"
+      :title="`新增直播间 · ${liveRoomDialog.courseTitle || '课程'}`"
+      :message="liveRoomForm.provider === 'openmeetings' ? '将直接调用 OpenMeetings 9.0 接口创建房间，并自动生成可进入链接。' : '使用已有直播间链接作为课程直播入口。'"
+      :confirm-text="creatingRoom ? '创建中...' : '创建直播间'"
+      :pending="creatingRoom"
+      @cancel="closeLiveRoomDialog"
+      @confirm="createLiveRoom"
+    >
+      <template #default>
+        <form class="live-room-form" @submit.prevent="createLiveRoom">
+          <label>
+            接入方式
+            <select v-model="liveRoomForm.provider">
+              <option value="openmeetings">OpenMeetings 9.0</option>
+              <option value="custom">自定义链接</option>
+            </select>
+          </label>
+          <label>
+            直播间名称
+            <input v-model="liveRoomForm.name" placeholder="例如：PLC1 正课直播间" required />
+          </label>
+          <label v-if="liveRoomForm.provider === 'openmeetings'">
+            房间类型
+            <select v-model="liveRoomForm.roomType">
+              <option value="conference">会议室</option>
+              <option value="presentation">演示室</option>
+              <option value="interview">面试室</option>
+            </select>
+          </label>
+          <label v-if="liveRoomForm.provider === 'openmeetings'">
+            容量上限
+            <input v-model="liveRoomForm.capacity" type="number" min="1" max="200" />
+          </label>
+          <label v-if="liveRoomForm.provider === 'openmeetings'">
+            房间备注
+            <input v-model="liveRoomForm.comment" placeholder="用于在 OpenMeetings 后台区分课程" />
+          </label>
+          <label v-else>
+            直播间链接
+            <input v-model="liveRoomForm.meetingUrl" placeholder="https://..." required />
+          </label>
+        </form>
+      </template>
+    </ConfirmDialog>
   </main>
 </template>
 
@@ -677,6 +998,38 @@ onMounted(async () => {
   border-radius: 12px;
   padding: 16px;
   margin-bottom: 14px;
+}
+
+.status-alert {
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.status-alert.warning {
+  background: #fff7ed;
+  color: #9a3412;
+  border: 1px solid #fed7aa;
+}
+
+.status-alert.critical {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+}
+
+.status-alert-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.status-alert-copy small {
+  color: inherit;
+  opacity: 0.86;
 }
 
 .create-form {
@@ -740,6 +1093,23 @@ select {
   justify-content: space-between;
   gap: 8px;
   margin-top: 8px;
+  align-items: flex-start;
+}
+
+.room-info {
+  display: grid;
+  gap: 4px;
+}
+
+.room-info small {
+  color: #64748b;
+}
+
+.room-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
 }
 
 button {
@@ -756,7 +1126,46 @@ button {
   background: #374151;
 }
 
+.mini {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
 .error {
   color: #b91c1c;
+}
+
+.success {
+  color: #166534;
+}
+
+.hint {
+  color: #475569;
+}
+
+.health-meta {
+  color: #64748b;
+  margin: 4px 0;
+}
+
+.health-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.warning-text {
+  color: #9a3412;
+}
+
+.live-room-form {
+  display: grid;
+  gap: 10px;
+}
+
+.live-room-form label {
+  display: grid;
+  gap: 6px;
+  color: #334155;
 }
 </style>

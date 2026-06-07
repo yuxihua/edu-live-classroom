@@ -2,23 +2,10 @@ import express from "express";
 import pool from "../config/db.js";
 import { requireAuth } from "../middleware/auth.js";
 import { hasPermission } from "../middleware/permissions.js";
+import { checkOpenMeetingsConnection, createOpenMeetingsRoom } from "../services/openmeetings.js";
 import { createPaidSalesOrder } from "../services/sales.js";
 
 const router = express.Router();
-
-function buildOpenMeetingsRoomUrl(courseId) {
-  const baseUrl = process.env.OPENMEETINGS_ROOM_BASE_URL;
-  if (!baseUrl) {
-    return null;
-  }
-
-  try {
-    const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
-    return `${normalizedBaseUrl}/${courseId}`;
-  } catch (error) {
-    return null;
-  }
-}
 
 async function canManageCourse(req) {
   if (["admin", "org_admin", "district_admin", "teacher"].includes(req.user.role)) {
@@ -240,8 +227,6 @@ router.post("/", requireAuth, async (req, res) => {
     return res.status(400).json({ message: "Missing required fields" });
   }
 
-  const hasOpenMeetingsBaseUrl = Boolean(process.env.OPENMEETINGS_ROOM_BASE_URL);
-
   const requestedOrganizationId = req.body.organizationId ? Number(req.body.organizationId) : null;
   const requestedDistrictId = req.body.districtId ? Number(req.body.districtId) : null;
   const owner = resolveCourseOwner(req);
@@ -274,13 +259,6 @@ router.post("/", requireAuth, async (req, res) => {
       "INSERT INTO courses (organization_id, district_id, classroom_id, title, subject, teacher_name, teacher_user_id, assistant_name, start_time, end_time, meeting_url, created_by_user_id, price_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [owner.organizationId, owner.districtId, classroomId || null, title, subject || null, resolvedTeacher.teacherName, resolvedTeacher.teacherUserId, assistantName || null, startTime, endTime, meetingUrl || null, req.user.userId, Number(priceCents || 0)]
     );
-
-    if (!meetingUrl && hasOpenMeetingsBaseUrl) {
-      const autoMeetingUrl = buildOpenMeetingsRoomUrl(result.insertId);
-      if (autoMeetingUrl) {
-        await pool.query("UPDATE courses SET meeting_url = ? WHERE id = ?", [autoMeetingUrl, result.insertId]);
-      }
-    }
 
     await recordAudit(req, "create", "course", result.insertId, { title, subject, teacherName: resolvedTeacher.teacherName, teacherUserId: resolvedTeacher.teacherUserId, assistantName: assistantName || null });
 
@@ -476,12 +454,36 @@ router.get("/:id/live-rooms", requireAuth, async (req, res) => {
     }
 
     const [rows] = await pool.query(
-      "SELECT id, name, meeting_url, created_by_user_id, created_at FROM live_rooms WHERE course_id = ? ORDER BY id ASC",
+      `SELECT
+         id,
+         name,
+         meeting_url,
+         openmeetings_room_id,
+         room_type,
+         CASE WHEN openmeetings_room_id IS NULL THEN 'custom' ELSE 'openmeetings' END AS provider,
+         created_by_user_id,
+         created_at
+       FROM live_rooms
+       WHERE course_id = ?
+       ORDER BY id ASC`,
       [courseId]
     );
     return res.json(rows);
   } catch (error) {
     return res.status(500).json({ message: "Failed to fetch live rooms" });
+  }
+});
+
+router.get("/openmeetings/health", requireAuth, async (req, res) => {
+  if (!(await canManageCourse(req))) {
+    return res.status(403).json({ message: "Only admin, organization admin, district admin or teacher can check OpenMeetings health" });
+  }
+
+  try {
+    const result = await checkOpenMeetingsConnection();
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to check OpenMeetings health" });
   }
 });
 
@@ -495,9 +497,9 @@ router.post("/:id/live-rooms", requireAuth, async (req, res) => {
     return res.status(400).json({ message: "Invalid courseId" });
   }
 
-  const { name, meetingUrl } = req.body;
-  if (!name || !meetingUrl) {
-    return res.status(400).json({ message: "name and meetingUrl are required" });
+  const { name, meetingUrl, provider, roomType, capacity, comment } = req.body;
+  if (!name) {
+    return res.status(400).json({ message: "name is required" });
   }
 
   try {
@@ -506,15 +508,50 @@ router.post("/:id/live-rooms", requireAuth, async (req, res) => {
       return res.status(404).json({ message: "Course not found" });
     }
 
+    let resolvedMeetingUrl = String(meetingUrl || "").trim();
+    let openMeetingsRoomId = null;
+    let resolvedRoomType = String(roomType || "conference").trim().toLowerCase();
+    const resolvedProvider = String(provider || "openmeetings").trim().toLowerCase();
+
+    if (resolvedProvider === "openmeetings") {
+      const roomResult = await createOpenMeetingsRoom({
+        name,
+        type: resolvedRoomType,
+        capacity,
+        comment,
+        externalId: String(courseId),
+        externalType: "edu-live-course"
+      });
+      resolvedMeetingUrl = roomResult.meetingUrl;
+      openMeetingsRoomId = roomResult.roomId;
+      resolvedRoomType = roomResult.roomType;
+    }
+
+    if (!resolvedMeetingUrl) {
+      return res.status(400).json({ message: "meetingUrl is required when provider is custom" });
+    }
+
     const [result] = await pool.query(
-      "INSERT INTO live_rooms (course_id, name, meeting_url, created_by_user_id) VALUES (?, ?, ?, ?)",
-      [courseId, name, meetingUrl, req.user.userId]
+      "INSERT INTO live_rooms (course_id, name, meeting_url, openmeetings_room_id, room_type, created_by_user_id) VALUES (?, ?, ?, ?, ?, ?)",
+      [courseId, name, resolvedMeetingUrl, openMeetingsRoomId, resolvedRoomType || null, req.user.userId]
     );
 
-    await recordAudit(req, "create", "live_room", result.insertId, { courseId, name });
-    return res.status(201).json({ id: result.insertId });
+    await recordAudit(req, "create", "live_room", result.insertId, {
+      courseId,
+      name,
+      provider: resolvedProvider,
+      openMeetingsRoomId,
+      roomType: resolvedRoomType || null
+    });
+    return res.status(201).json({
+      id: result.insertId,
+      provider: resolvedProvider,
+      meetingUrl: resolvedMeetingUrl,
+      openMeetingsRoomId,
+      roomType: resolvedRoomType || null
+    });
   } catch (error) {
-    return res.status(500).json({ message: "Failed to create live room" });
+    return res.status(500).json({ message: error.message || "Failed to create live room" });
   }
 });
 

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import http from "../api/http.js";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
@@ -7,7 +7,7 @@ import ConfirmDialog from "../components/ConfirmDialog.vue";
 const router = useRouter();
 const activeTab = ref("dashboard");
 const activeSalesTab = ref("rules");
-const dashboard = ref({ districts: 0, organizations: 0, users: 0, courses: 0, logs: 0 });
+const dashboard = ref({ districts: 0, organizations: 0, users: 0, courses: 0, logs: 0, openMeetings: null });
 const districts = ref([]);
 const organizations = ref([]);
 const users = ref([]);
@@ -16,6 +16,12 @@ const guardianLinks = ref([]);
 const settings = ref([]);
 const permissions = ref([]);
 const logs = ref([]);
+const expandedLogDetails = ref({});
+const copiedLogDetailId = ref(0);
+const logDetailCopyTimer = ref(null);
+const logsFilter = ref("all");
+const logsQuery = ref("");
+const logsDateRange = ref({ startDate: "", endDate: "" });
 const coursesForSales = ref([]);
 const salesCommissionRules = ref([]);
 const salesAgents = ref([]);
@@ -29,6 +35,149 @@ const salesOrderPagination = ref({ page: 1, pageSize: 20, total: 0 });
 const formMessage = ref("");
 const errorText = ref("");
 const editingUserId = ref(0);
+const openMeetingsChecking = ref(false);
+const openMeetingsPollTimer = ref(null);
+
+const openMeetingsStatusText = (status) => {
+  if (!status || !status.checked) return "未检测";
+  return status.ok ? "正常" : "异常";
+};
+
+const openMeetingsFailureCount = computed(() => Number(dashboard.value.openMeetings?.failureCount || 0));
+
+const openMeetingsAlertLevel = computed(() => {
+  const status = dashboard.value.openMeetings;
+  if (!status?.checked || status.ok) return "ok";
+  const count = openMeetingsFailureCount.value;
+  if (count >= 5) return "critical";
+  if (count >= 3) return "warning";
+  return "notice";
+});
+
+const openMeetingsAlertText = computed(() => {
+  if (openMeetingsAlertLevel.value === "critical") return "严重告警：OpenMeetings 连续失败 >= 5 次";
+  if (openMeetingsAlertLevel.value === "warning") return "告警：OpenMeetings 连续失败 >= 3 次";
+  if (openMeetingsAlertLevel.value === "notice") return "提示：OpenMeetings 最近检测失败";
+  return "";
+});
+
+const openMeetingsDiagnosticsText = computed(() => {
+  const status = dashboard.value.openMeetings || {};
+  return [
+    `状态: ${openMeetingsStatusText(status)}`,
+    `消息: ${status.message || "暂无状态"}`,
+    `检测时间: ${status.checkedAt || "-"}`,
+    `最近成功: ${status.lastSuccessAt || "-"}`,
+    `最近失败: ${status.lastErrorAt || "-"}`,
+    `连续失败: ${Number(status.failureCount || 0)}`,
+    `耗时: ${status.durationMs ?? "-"} ms`,
+    `API 地址: ${status.apiBaseUrl || "-"}`,
+    `房间地址: ${status.roomBaseUrl || "-"}`
+  ].join("\n");
+});
+
+const parseLogTime = (value) => {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const timestamp = new Date(text).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+};
+
+const parseFilterDate = (value, endOfDay = false) => {
+  const dateText = String(value || "").trim();
+  if (!dateText) return null;
+  const suffix = endOfDay ? "T23:59:59.999" : "T00:00:00.000";
+  const timestamp = new Date(`${dateText}${suffix}`).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+};
+
+const filteredLogs = computed(() => {
+  const keyword = String(logsQuery.value || "").trim().toLowerCase();
+  const startAt = parseFilterDate(logsDateRange.value.startDate, false);
+  const endAt = parseFilterDate(logsDateRange.value.endDate, true);
+
+  return logs.value.filter((item) => {
+    if (logsFilter.value === "openmeetings-health" && item.action !== "openmeetings.health.check") {
+      return false;
+    }
+
+    const createdAt = parseLogTime(item.created_at);
+    if (startAt !== null && createdAt !== null && createdAt < startAt) {
+      return false;
+    }
+    if (endAt !== null && createdAt !== null && createdAt > endAt) {
+      return false;
+    }
+
+    if (!keyword) return true;
+    const haystack = [
+      item.created_at,
+      item.actor_name,
+      item.actor_email,
+      item.action,
+      item.resource_type,
+      item.resource_id,
+      item.detail,
+      item.ip_address
+    ].map((part) => String(part || "").toLowerCase()).join(" ");
+    return haystack.includes(keyword);
+  });
+});
+
+const normalizeLogDetailText = (value) => {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  try {
+    const parsed = JSON.parse(text);
+    return JSON.stringify(parsed, null, 2);
+  } catch (error) {
+    return text;
+  }
+};
+
+const hasLogDetail = (item) => Boolean(String(item?.detail || "").trim());
+
+const isLogDetailExpanded = (logId) => Boolean(expandedLogDetails.value[logId]);
+
+const toggleLogDetail = (logId) => {
+  expandedLogDetails.value = {
+    ...expandedLogDetails.value,
+    [logId]: !expandedLogDetails.value[logId]
+  };
+};
+
+const logDetailText = (item) => normalizeLogDetailText(item?.detail);
+
+const copiedLogDetailRecently = (logId) => Number(copiedLogDetailId.value) === Number(logId);
+
+const copyLogDetail = async (item) => {
+  if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+    errorText.value = "当前浏览器不支持复制到剪贴板";
+    return;
+  }
+
+  const text = logDetailText(item);
+  if (!text) {
+    errorText.value = "该日志没有可复制的详情";
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(text);
+    copiedLogDetailId.value = Number(item.id || 0);
+    formMessage.value = "日志详情已复制";
+    errorText.value = "";
+    if (logDetailCopyTimer.value) {
+      clearTimeout(logDetailCopyTimer.value);
+    }
+    logDetailCopyTimer.value = setTimeout(() => {
+      copiedLogDetailId.value = 0;
+      logDetailCopyTimer.value = null;
+    }, 1500);
+  } catch (error) {
+    errorText.value = "复制日志详情失败";
+  }
+};
 
 const districtForm = ref({ name: "", code: "", organizationId: "" });
 const organizationForm = ref({ name: "", code: "", category: "school" });
@@ -264,6 +413,59 @@ const fetchDashboard = async () => {
   dashboard.value = data;
 };
 
+const refreshOpenMeetingsHealth = async (options = {}) => {
+  const { silent = false, source = "manual" } = options;
+  if (openMeetingsChecking.value) return;
+  openMeetingsChecking.value = true;
+  try {
+    const { data } = await http.get("/admin/openmeetings/health", {
+      params: { refresh: true, source }
+    });
+    dashboard.value = {
+      ...dashboard.value,
+      openMeetings: data
+    };
+    if (!silent) {
+      formMessage.value = "OpenMeetings 状态已更新";
+    }
+    errorText.value = "";
+  } catch (error) {
+    errorText.value = toChineseMessage(error.response?.data?.message, "检测 OpenMeetings 状态失败");
+  } finally {
+    openMeetingsChecking.value = false;
+  }
+};
+
+const stopOpenMeetingsPolling = () => {
+  if (openMeetingsPollTimer.value) {
+    clearInterval(openMeetingsPollTimer.value);
+    openMeetingsPollTimer.value = null;
+  }
+};
+
+const startOpenMeetingsPolling = () => {
+  stopOpenMeetingsPolling();
+  openMeetingsPollTimer.value = setInterval(() => {
+    if (activeTab.value !== "dashboard") return;
+    refreshOpenMeetingsHealth({ silent: true, source: "polling" });
+  }, 60000);
+};
+
+const copyOpenMeetingsDiagnostics = async () => {
+  if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+    errorText.value = "当前浏览器不支持复制到剪贴板";
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(openMeetingsDiagnosticsText.value);
+    formMessage.value = "OpenMeetings 诊断信息已复制";
+    errorText.value = "";
+  } catch (error) {
+    errorText.value = "复制 OpenMeetings 诊断信息失败";
+  }
+};
+
 const fetchDistricts = async () => {
   const { data } = await http.get("/admin/districts");
   districts.value = data;
@@ -308,6 +510,17 @@ const fetchPermissionMatrix = async () => {
 const fetchLogs = async () => {
   const { data } = await http.get("/admin/logs");
   logs.value = data;
+  expandedLogDetails.value = {};
+};
+
+const setLogsFilter = (filter) => {
+  logsFilter.value = filter;
+};
+
+const clearLogsFilters = () => {
+  logsFilter.value = "all";
+  logsQuery.value = "";
+  logsDateRange.value = { startDate: "", endDate: "" };
 };
 
 const defaultCommissionRules = () => ([
@@ -1516,7 +1729,32 @@ onMounted(async () => {
   }
 
   await refreshActiveTab();
+
+  if (activeTab.value === "dashboard") {
+    await refreshOpenMeetingsHealth({ silent: true, source: "dashboard-init" });
+    startOpenMeetingsPolling();
+  }
 });
+
+onBeforeUnmount(() => {
+  stopOpenMeetingsPolling();
+  if (logDetailCopyTimer.value) {
+    clearTimeout(logDetailCopyTimer.value);
+    logDetailCopyTimer.value = null;
+  }
+});
+
+watch(
+  () => activeTab.value,
+  async (tab) => {
+    if (tab === "dashboard") {
+      await refreshOpenMeetingsHealth({ silent: true, source: "dashboard-tab" });
+      startOpenMeetingsPolling();
+      return;
+    }
+    stopOpenMeetingsPolling();
+  }
+);
 
 watch(
   () => commissionForm.value.organizationId,
@@ -1570,6 +1808,23 @@ watch(
       ]" :key="item[0]">
         <h3>{{ item[0] }}</h3>
         <strong>{{ item[1] }}</strong>
+      </div>
+      <div class="card openmeetings-card" :class="[`openmeetings-${openMeetingsAlertLevel}`]">
+        <h3>OpenMeetings</h3>
+        <strong>{{ openMeetingsStatusText(dashboard.openMeetings) }}</strong>
+        <p v-if="openMeetingsAlertText" class="openmeetings-alert">{{ openMeetingsAlertText }}</p>
+        <p>{{ dashboard.openMeetings?.message || '暂无状态' }}</p>
+        <p v-if="dashboard.openMeetings?.durationMs !== null && dashboard.openMeetings?.durationMs !== undefined">检测耗时：{{ dashboard.openMeetings.durationMs }} ms</p>
+        <p>连续失败：{{ Number(dashboard.openMeetings?.failureCount || 0) }}</p>
+        <p v-if="dashboard.openMeetings?.checkedAt">检查时间：{{ dashboard.openMeetings.checkedAt }}</p>
+        <p v-if="dashboard.openMeetings?.lastSuccessAt">最近成功：{{ dashboard.openMeetings.lastSuccessAt }}</p>
+        <p v-if="dashboard.openMeetings?.lastErrorAt">最近失败：{{ dashboard.openMeetings.lastErrorAt }}</p>
+        <p v-if="dashboard.openMeetings?.apiBaseUrl">API 地址：{{ dashboard.openMeetings.apiBaseUrl }}</p>
+        <p v-if="dashboard.openMeetings?.roomBaseUrl">房间地址：{{ dashboard.openMeetings.roomBaseUrl }}</p>
+        <div class="inline-actions">
+          <button class="ghost" type="button" :disabled="openMeetingsChecking" @click="refreshOpenMeetingsHealth({ source: 'manual' })">{{ openMeetingsChecking ? '检测中...' : '立即检测' }}</button>
+          <button class="ghost" type="button" @click="copyOpenMeetingsDiagnostics">复制诊断</button>
+        </div>
       </div>
     </section>
 
@@ -2036,11 +2291,34 @@ watch(
 
     <section v-else class="card">
       <h2>系统日志</h2>
+      <div class="inline-actions log-filter-actions">
+        <button type="button" :class="['ghost', { active: logsFilter === 'all' }]" @click="setLogsFilter('all')">全部日志</button>
+        <button type="button" :class="['ghost', { active: logsFilter === 'openmeetings-health' }]" @click="setLogsFilter('openmeetings-health')">仅看 OpenMeetings 健康日志</button>
+      </div>
+      <form class="form form-wide log-filter-form" @submit.prevent>
+        <input v-model="logsQuery" placeholder="筛选关键字：动作/资源/账号/IP/详情" />
+        <input type="date" v-model="logsDateRange.startDate" />
+        <input type="date" v-model="logsDateRange.endDate" />
+        <button type="button" class="ghost" @click="clearLogsFilters">清空筛选</button>
+      </form>
+      <p class="log-filter-summary">当前显示 {{ filteredLogs.length }} / {{ logs.length }} 条</p>
       <ul class="list compact">
-        <li v-for="item in logs" :key="item.id">
-          <span>{{ item.created_at }} / {{ item.actor_name || '系统' }} / {{ item.action }} / {{ item.resource_type }} / {{ item.resource_id || '-' }}</span>
+        <li v-for="item in filteredLogs" :key="item.id" class="log-item">
+          <div class="log-item-head">
+            <span>{{ item.created_at }} / {{ item.actor_name || '系统' }} / {{ item.action }} / {{ item.resource_type }} / {{ item.resource_id || '-' }}</span>
+            <div class="inline-actions">
+              <button v-if="hasLogDetail(item)" type="button" class="ghost log-detail-toggle" @click="toggleLogDetail(item.id)">
+                {{ isLogDetailExpanded(item.id) ? '收起详情' : '查看详情' }}
+              </button>
+              <button v-if="hasLogDetail(item)" type="button" class="ghost log-detail-toggle" @click="copyLogDetail(item)">
+                {{ copiedLogDetailRecently(item.id) ? '已复制' : '复制详情' }}
+              </button>
+            </div>
+          </div>
+          <pre v-if="hasLogDetail(item) && isLogDetailExpanded(item.id)" class="log-detail-content">{{ logDetailText(item) }}</pre>
         </li>
       </ul>
+      <p v-if="filteredLogs.length === 0" class="log-filter-summary">当前筛选条件下暂无日志</p>
     </section>
 
     <ConfirmDialog
@@ -2132,6 +2410,31 @@ watch(
 
 .grid .card {
   text-align: center;
+}
+
+.openmeetings-card {
+  border: 1px solid #d1d5db;
+}
+
+.openmeetings-card.openmeetings-notice {
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.openmeetings-card.openmeetings-warning {
+  border-color: #f97316;
+  background: #fff7ed;
+}
+
+.openmeetings-card.openmeetings-critical {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+
+.openmeetings-alert {
+  margin: 8px 0;
+  font-weight: 600;
+  color: #b91c1c;
 }
 
 .grid strong {
@@ -2260,6 +2563,53 @@ input, select, textarea {
 .inline-actions {
   display: flex;
   gap: 8px;
+}
+
+.log-filter-actions {
+  margin-bottom: 10px;
+}
+
+.log-filter-form {
+  margin-bottom: 10px;
+}
+
+.log-filter-actions .active {
+  background: #0f766e;
+  color: #ffffff;
+}
+
+.log-filter-summary {
+  margin: 0 0 10px;
+  color: #4b5563;
+  font-size: 13px;
+}
+
+.log-item {
+  display: block;
+}
+
+.log-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.log-detail-toggle {
+  padding: 6px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.log-detail-content {
+  margin: 10px 0 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #0b1020;
+  color: #e5e7eb;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .compact li {

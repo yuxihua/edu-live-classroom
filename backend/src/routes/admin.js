@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import pool from "../config/db.js";
 import { requireAuth } from "../middleware/auth.js";
 import { clearPermissionCache, requirePermission } from "../middleware/permissions.js";
+import { checkOpenMeetingsConnection } from "../services/openmeetings.js";
 
 const router = express.Router();
 const MANAGE_ROLES = ["admin", "org_admin", "district_admin"];
@@ -125,6 +126,75 @@ async function recordAudit(req, action, resourceType, resourceId = null, detail 
   }
 }
 
+const createDefaultOpenMeetingsSnapshot = () => ({
+  ok: false,
+  checked: false,
+  message: "未检测",
+  checkedAt: null,
+  durationMs: null,
+  failureCount: 0,
+  lastSuccessAt: null,
+  lastErrorAt: null,
+  apiBaseUrl: null,
+  roomBaseUrl: null
+});
+
+let openMeetingsHealthSnapshot = createDefaultOpenMeetingsSnapshot();
+
+const getOpenMeetingsHealthSnapshot = () => ({ ...openMeetingsHealthSnapshot });
+
+const refreshOpenMeetingsHealthSnapshot = async () => {
+  const startedAt = Date.now();
+  const checkedAt = new Date().toISOString();
+  const previousSnapshot = openMeetingsHealthSnapshot;
+
+  try {
+    const result = await checkOpenMeetingsConnection();
+    openMeetingsHealthSnapshot = {
+      ...previousSnapshot,
+      ok: true,
+      checked: true,
+      message: "连接成功",
+      checkedAt,
+      durationMs: Date.now() - startedAt,
+      failureCount: 0,
+      lastSuccessAt: checkedAt,
+      apiBaseUrl: result.apiBaseUrl || null,
+      roomBaseUrl: result.roomBaseUrl || null
+    };
+  } catch (error) {
+    openMeetingsHealthSnapshot = {
+      ...previousSnapshot,
+      ok: false,
+      checked: true,
+      message: error.message || "检测 OpenMeetings 接口失败",
+      checkedAt,
+      durationMs: Date.now() - startedAt,
+      failureCount: Number(previousSnapshot.failureCount || 0) + 1,
+      lastErrorAt: checkedAt
+    };
+  }
+
+  return getOpenMeetingsHealthSnapshot();
+};
+
+const runOpenMeetingsHealthCheck = async (req, source = "manual") => {
+  const snapshot = await refreshOpenMeetingsHealthSnapshot();
+  await recordAudit(req, "openmeetings.health.check", "integration", null, {
+    source,
+    ok: snapshot.ok,
+    message: snapshot.message,
+    checkedAt: snapshot.checkedAt,
+    durationMs: snapshot.durationMs,
+    failureCount: snapshot.failureCount,
+    lastSuccessAt: snapshot.lastSuccessAt,
+    lastErrorAt: snapshot.lastErrorAt,
+    apiBaseUrl: snapshot.apiBaseUrl,
+    roomBaseUrl: snapshot.roomBaseUrl
+  });
+  return snapshot;
+};
+
 router.use(requireAuth);
 
 router.get("/meta", async (req, res) => {
@@ -166,15 +236,34 @@ router.get("/dashboard", requirePermission("system.manage"), async (req, res) =>
       pool.query("SELECT COUNT(*) AS count FROM audit_logs")
     ]);
 
+    const openMeetings = getOpenMeetingsHealthSnapshot();
+
     return res.json({
       districts: districts[0].count,
       organizations: organizations[0].count,
       users: users[0].count,
       courses: courses[0].count,
-      logs: logs[0].count
+      logs: logs[0].count,
+      openMeetings
     });
   } catch (error) {
     return res.status(500).json({ message: "Failed to load dashboard" });
+  }
+});
+
+router.get("/openmeetings/health", requirePermission("system.manage"), async (req, res) => {
+  if (!canManage(req)) {
+    return res.status(403).json({ message: "Permission denied" });
+  }
+
+  try {
+    const shouldRefresh = String(req.query.refresh ?? "true").trim().toLowerCase() !== "false";
+    const snapshot = shouldRefresh
+      ? await runOpenMeetingsHealthCheck(req, String(req.query.source || "manual"))
+      : getOpenMeetingsHealthSnapshot();
+    return res.json(snapshot);
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to check OpenMeetings health" });
   }
 });
 

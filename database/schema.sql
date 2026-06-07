@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS live_rooms (
   course_id BIGINT UNSIGNED NOT NULL,
   name VARCHAR(120) NOT NULL,
   meeting_url VARCHAR(500) NOT NULL,
+  openmeetings_room_id BIGINT UNSIGNED NULL,
+  room_type VARCHAR(40) NULL,
   created_by_user_id BIGINT UNSIGNED NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_live_room_course FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE
@@ -237,6 +239,30 @@ SET @sql = IF(
   ),
   'ALTER TABLE users MODIFY COLUMN email VARCHAR(160) NULL',
   'SELECT 1'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'live_rooms' AND column_name = 'openmeetings_room_id'
+  ),
+  'SELECT 1',
+  'ALTER TABLE live_rooms ADD COLUMN openmeetings_room_id BIGINT UNSIGNED NULL AFTER meeting_url'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'live_rooms' AND column_name = 'room_type'
+  ),
+  'SELECT 1',
+  'ALTER TABLE live_rooms ADD COLUMN room_type VARCHAR(40) NULL AFTER openmeetings_room_id'
 );
 PREPARE stmt FROM @sql;
 EXECUTE stmt;

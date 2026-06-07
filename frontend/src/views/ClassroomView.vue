@@ -10,6 +10,7 @@ const selectedRoomId = ref(0);
 const profile = ref({});
 const errorText = ref("");
 const joinUrl = ref("");
+const copiedState = ref({ key: "", at: 0 });
 const replays = ref([]);
 const addingReplay = ref(false);
 const creatingRoom = ref(false);
@@ -19,7 +20,14 @@ const replayForm = ref({
   replayUrl: "",
   durationSeconds: ""
 });
-const roomForm = ref({ name: "", meetingUrl: "" });
+const roomForm = ref({
+  provider: "openmeetings",
+  name: "",
+  roomType: "conference",
+  capacity: 25,
+  comment: "",
+  meetingUrl: ""
+});
 const purchaseStudentId = ref("");
 
 const user = JSON.parse(localStorage.getItem("user") || "{}");
@@ -32,6 +40,11 @@ const messageMap = {
   "Failed to add replay": "添加回放失败",
   "Failed to fetch live rooms": "加载直播间失败",
   "Failed to create live room": "创建直播间失败",
+  "OPENMEETINGS_API_BASE_URL is not configured": "未配置 OpenMeetings 接口地址",
+  "OPENMEETINGS_API_USER is not configured": "未配置 OpenMeetings 接口账号",
+  "OPENMEETINGS_API_PASS is not configured": "未配置 OpenMeetings 接口密码",
+  "meetingUrl is required when provider is custom": "选择自定义链接时必须填写直播间链接",
+  "name is required": "请填写直播间名称",
   "Failed to purchase course": "购买课程失败",
   "No permission to view replays": "没有权限查看回放",
   "Student must enroll before viewing replays": "学员需先报名才能查看回放",
@@ -51,6 +64,47 @@ const toChineseMessage = (message, fallback) => {
 };
 
 const courseId = computed(() => Number(route.params.id));
+
+const liveRoomMetaText = (room) => {
+  const provider = String(room?.provider || (room?.openmeetings_room_id ? "openmeetings" : "custom"));
+  const providerText = provider === "openmeetings" ? "OpenMeetings" : "自定义链接";
+  const parts = [providerText];
+  if (room?.room_type) {
+    parts.push(`类型：${room.room_type}`);
+  }
+  if (room?.openmeetings_room_id) {
+    parts.push(`房间ID：${room.openmeetings_room_id}`);
+  }
+  return parts.join(" / ");
+};
+
+const copyText = async (value, key) => {
+  const text = String(value || "").trim();
+  if (!text) return;
+
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "readonly");
+      textarea.style.position = "absolute";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+    copiedState.value = { key: String(key || ""), at: Date.now() };
+  } catch (error) {
+    errorText.value = "复制失败，请手动复制";
+  }
+};
+
+const copiedRecently = (key) => {
+  return copiedState.value.key === String(key || "") && Date.now() - Number(copiedState.value.at || 0) < 2000;
+};
 
 const fetchCourse = async () => {
   try {
@@ -138,8 +192,22 @@ const purchaseCourse = async () => {
 const createLiveRoom = async () => {
   creatingRoom.value = true;
   try {
-    await http.post(`/courses/${courseId.value}/live-rooms`, roomForm.value);
-    roomForm.value = { name: "", meetingUrl: "" };
+    await http.post(`/courses/${courseId.value}/live-rooms`, {
+      provider: roomForm.value.provider,
+      name: roomForm.value.name,
+      roomType: roomForm.value.roomType,
+      capacity: Number(roomForm.value.capacity || 25),
+      comment: roomForm.value.comment,
+      meetingUrl: roomForm.value.provider === "custom" ? roomForm.value.meetingUrl : ""
+    });
+    roomForm.value = {
+      provider: "openmeetings",
+      name: "",
+      roomType: "conference",
+      capacity: 25,
+      comment: "",
+      meetingUrl: ""
+    };
     await fetchLiveRooms();
     await updateJoinUrl();
   } catch (error) {
@@ -207,19 +275,52 @@ onMounted(async () => {
       </div>
       <div class="room-switcher" v-if="liveRooms.length > 0">
         <h3>直播间</h3>
-        <label v-for="room in liveRooms" :key="room.id" class="room-choice">
-          <input type="radio" :value="room.id" v-model="selectedRoomId" @change="switchRoom" />
-          {{ room.name }}
-        </label>
+        <div v-for="room in liveRooms" :key="room.id" class="room-choice-wrap">
+          <label class="room-choice">
+            <input type="radio" :value="room.id" v-model="selectedRoomId" @change="switchRoom" />
+            <span class="room-choice-main">{{ room.name }}</span>
+            <small class="room-choice-meta">{{ liveRoomMetaText(room) }}</small>
+          </label>
+          <div class="room-choice-actions">
+            <a :href="room.meeting_url" target="_blank">打开链接</a>
+            <button type="button" class="secondary mini" @click="copyText(room.meeting_url, `room-link-${room.id}`)">
+              {{ copiedRecently(`room-link-${room.id}`) ? '已复制' : '复制链接' }}
+            </button>
+            <button
+              v-if="room.openmeetings_room_id"
+              type="button"
+              class="secondary mini"
+              @click="copyText(room.openmeetings_room_id, `room-id-${room.id}`)"
+            >
+              {{ copiedRecently(`room-id-${room.id}`) ? '已复制' : '复制房间ID' }}
+            </button>
+          </div>
+        </div>
       </div>
       <a v-if="joinUrl" :href="joinUrl" target="_blank">打开直播间</a>
+      <button v-if="joinUrl" type="button" class="secondary mini" @click="copyText(joinUrl, 'join-url')">
+        {{ copiedRecently('join-url') ? '已复制' : '复制进入链接' }}
+      </button>
       <button @click="checkOut">离开课堂</button>
 
       <div v-if="canManageRoom" class="room-form-box">
         <h3>新增直播间</h3>
         <form class="replay-form" @submit.prevent="createLiveRoom">
+          <select v-model="roomForm.provider">
+            <option value="openmeetings">OpenMeetings 9.0</option>
+            <option value="custom">自定义链接</option>
+          </select>
           <input v-model="roomForm.name" placeholder="直播间名称" required />
-          <input v-model="roomForm.meetingUrl" placeholder="直播间链接" required />
+          <template v-if="roomForm.provider === 'openmeetings'">
+            <select v-model="roomForm.roomType">
+              <option value="conference">会议室</option>
+              <option value="presentation">演示室</option>
+              <option value="interview">面试室</option>
+            </select>
+            <input v-model="roomForm.capacity" type="number" min="1" max="200" placeholder="房间容量（默认25）" />
+            <input v-model="roomForm.comment" placeholder="房间备注（可选）" />
+          </template>
+          <input v-else v-model="roomForm.meetingUrl" placeholder="直播间链接" required />
           <button type="submit" :disabled="creatingRoom">{{ creatingRoom ? '创建中...' : '创建直播间' }}</button>
         </form>
       </div>
@@ -272,6 +373,27 @@ onMounted(async () => {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.room-choice-wrap {
+  display: grid;
+  gap: 6px;
+}
+
+.room-choice-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.room-choice-main {
+  color: #0f172a;
+}
+
+.room-choice-meta {
+  color: #64748b;
 }
 
 .replay-box {
@@ -307,6 +429,13 @@ input {
   padding: 8px 10px;
 }
 
+select {
+  font: inherit;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
 button {
   margin-top: 12px;
   border: none;
@@ -315,6 +444,16 @@ button {
   color: #fff;
   border-radius: 8px;
   cursor: pointer;
+}
+
+.secondary {
+  background: #475569;
+}
+
+.mini {
+  margin-top: 0;
+  padding: 6px 10px;
+  font-size: 12px;
 }
 
 .error {

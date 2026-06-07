@@ -12,6 +12,7 @@ This project provides a starter codebase for a training-school live classroom sy
 - Attendance summary API for each course (admin/teacher)
 - Replay list and add replay (admin/teacher create, student read after enrollment)
 - Signed classroom join link endpoint for OpenMeetings URL
+- Live room creation via OpenMeetings 9.0 WebService API
 
 ## Management capabilities (new)
 
@@ -58,7 +59,12 @@ npm run dev
 ```
 
 Set `OPENMEETINGS_JOIN_SECRET` in `.env` for signed join links.
-Set `OPENMEETINGS_ROOM_BASE_URL` in `.env` to automatically generate course room links.
+Set `OPENMEETINGS_API_BASE_URL`, `OPENMEETINGS_API_USER`, `OPENMEETINGS_API_PASS` in `.env` to enable direct room creation on OpenMeetings 9.0.
+Set `OPENMEETINGS_ROOM_BASE_URL` in `.env` to generate room join URLs after creation.
+Health check endpoint for privileged users: `GET /api/courses/openmeetings/health`.
+Admin center health endpoint: `GET /api/admin/openmeetings/health`.
+Use `GET /api/admin/openmeetings/health?refresh=true` to run a new check and write an audit log entry (`openmeetings.health.check`).
+Use `GET /api/admin/openmeetings/health?refresh=false` to read the latest snapshot only.
 
 API health: `http://localhost:3000/api/health`
 

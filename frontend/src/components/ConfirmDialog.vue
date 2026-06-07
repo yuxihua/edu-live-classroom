@@ -54,13 +54,14 @@ const onMaskClick = () => {
   <div v-if="visible" class="dialog-mask" @click="onMaskClick">
     <section class="dialog-card" @click.stop>
       <h3>{{ title }}</h3>
-      <p>{{ message }}</p>
+      <p v-if="message">{{ message }}</p>
       <ul v-if="normalizedDetailItems.length" class="dialog-detail-list">
         <li v-for="item in normalizedDetailItems" :key="`${item.label}-${item.meta}`" class="dialog-detail-item">
           <span>{{ item.label }}</span>
           <small v-if="item.meta">{{ item.meta }}</small>
         </li>
       </ul>
+      <slot />
       <div class="dialog-actions">
         <button type="button" class="ghost" :disabled="pending" @click="emit('cancel')">取消</button>
         <button type="button" :disabled="pending" @click="emit('confirm')">
