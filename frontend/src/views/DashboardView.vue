@@ -110,6 +110,18 @@ const toDateTimeLocal = (value) => {
   return text.replace(" ", "T").slice(0, 16);
 };
 
+const autoSelectSingleOrganization = () => {
+  if (!canSelectScope) return;
+  if (organizations.value.length !== 1) return;
+  const onlyOrganizationId = String(organizations.value[0].id);
+  if (!newCourse.value.organizationId) {
+    newCourse.value.organizationId = onlyOrganizationId;
+  }
+  if (editingCourseId.value && !editCourse.value.organizationId) {
+    editCourse.value.organizationId = onlyOrganizationId;
+  }
+};
+
 const fetchProfile = async () => {
   const { data } = await http.get("/auth/me");
   me.value = data;
@@ -121,6 +133,7 @@ const fetchProfile = async () => {
 const fetchOrganizations = async () => {
   const { data } = await http.get("/admin/organizations");
   organizations.value = data;
+  autoSelectSingleOrganization();
 };
 
 const fetchDistricts = async () => {
@@ -398,6 +411,7 @@ const createCourse = async () => {
       startTime: "",
       endTime: ""
     };
+    autoSelectSingleOrganization();
     await fetchCourses();
   } catch (error) {
     createError.value = toChineseMessage(error.response?.data?.message, "创建课程失败");

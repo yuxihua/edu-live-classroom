@@ -2,6 +2,7 @@ import express from "express";
 import pool from "../config/db.js";
 import { requireAuth } from "../middleware/auth.js";
 import { hasPermission } from "../middleware/permissions.js";
+import { createPaidSalesOrder } from "../services/sales.js";
 
 const router = express.Router();
 
@@ -436,15 +437,24 @@ router.post("/:id/purchase", requireAuth, async (req, res) => {
       return res.status(404).json({ message: "Course not found" });
     }
 
-    await pool.query(
-      "INSERT INTO course_purchases (course_id, buyer_user_id, student_user_id, amount_cents, status) VALUES (?, ?, ?, ?, 'paid') ON DUPLICATE KEY UPDATE amount_cents = VALUES(amount_cents), status = 'paid'",
-      [courseId, req.user.userId, targetStudentId, Number(courseRows[0].price_cents || 0)]
-    );
-
-    await pool.query(
-      "INSERT INTO course_enrollments (course_id, user_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE user_id = user_id",
+    const [paidRows] = await pool.query(
+      "SELECT id FROM course_purchases WHERE course_id = ? AND student_user_id = ? AND status = 'paid' LIMIT 1",
       [courseId, targetStudentId]
     );
+    if (paidRows.length > 0) {
+      return res.status(200).json({ message: "Already purchased" });
+    }
+
+    await createPaidSalesOrder({
+      courseId,
+      buyerUserId: req.user.userId,
+      studentUserId: targetStudentId,
+      amountCents: Number(courseRows[0].price_cents || 0),
+      paymentChannel: "internal",
+      source: "purchase",
+      createdByUserId: req.user.userId,
+      meta: { buyerRole: req.user.role }
+    });
 
     await recordAudit(req, "purchase", "course", courseId, { buyerUserId: req.user.userId, studentUserId: targetStudentId });
     return res.status(201).json({ message: "Purchased" });

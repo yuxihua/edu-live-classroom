@@ -14,6 +14,16 @@ const guardianLinks = ref([]);
 const settings = ref([]);
 const permissions = ref([]);
 const logs = ref([]);
+const coursesForSales = ref([]);
+const salesCommissionRules = ref([]);
+const salesAgents = ref([]);
+const studentSalesBindings = ref([]);
+const salesOrders = ref([]);
+const commissionReport = ref({ month: new Date().toISOString().slice(0, 7), startDate: "", endDate: "", courseId: "", salesUserId: "", levelNo: "", groupBy: "beneficiary" });
+const commissionReportSummary = ref({ paidOrderCount: 0, paidAmountCents: 0, commissionAmountCents: 0 });
+const commissionReportItems = ref([]);
+const salesOrderFilter = ref({ status: "", paymentChannel: "", source: "", courseId: "", salesUserId: "", keyword: "", startDate: "", endDate: "" });
+const salesOrderPagination = ref({ page: 1, pageSize: 20, total: 0 });
 const formMessage = ref("");
 const errorText = ref("");
 const editingUserId = ref(0);
@@ -39,6 +49,10 @@ const userForm = ref({
 });
 const settingForm = ref({ key: "", value: "", category: "general" });
 const permissionForm = ref({ roleName: "teacher" });
+const commissionForm = ref({ organizationId: "" });
+const salesAgentForm = ref({ salesUserId: "", parentSalesUserId: "", levelNo: 1 });
+const studentSalesForm = ref({ studentUserId: "", salesUserId: "" });
+const manualOrderForm = ref({ courseId: "", buyerUserId: "", studentUserId: "", amountCents: "" });
 const selectedPermissions = ref({});
 const collapsedPermissionGroups = ref({});
 const currentUser = JSON.parse(localStorage.getItem("user") || "{}");
@@ -105,6 +119,21 @@ const messageMap = {
   "Failed to create guardian link": "创建家长学员关系失败",
   "Failed to delete guardian link": "删除家长学员关系失败",
   "Failed to fetch logs": "加载系统日志失败",
+  "Failed to fetch commission rules": "加载分成规则失败",
+  "Failed to update commission rules": "更新分成规则失败",
+  "Failed to fetch sales agents": "加载销售员关系失败",
+  "Failed to save sales agent": "保存销售员关系失败",
+  "Failed to fetch student bindings": "加载学员归属失败",
+  "Failed to save student binding": "保存学员归属失败",
+  "Failed to fetch orders": "加载订单失败",
+  "Failed to export orders": "导出订单失败",
+  "Failed to mark order paid": "标记订单支付失败",
+  "Failed to create manual order": "手工录单失败",
+  "Failed to fetch commission report": "加载分成报表失败",
+  "month must be YYYY-MM": "月份格式应为 YYYY-MM",
+  "date range is invalid": "日期区间格式无效",
+  "rules are required": "请至少配置一条分成规则",
+  "courseId, studentUserId and buyerUserId are required": "课程、学员、购买人不能为空",
   "name and code are required": "名称和编码不能为空",
   "name, code and organizationId are required": "名称、编码和所属机构不能为空",
   "name, code, organizationId and districtId are required": "名称、编码、所属机构和学区不能为空",
@@ -225,6 +254,150 @@ const fetchLogs = async () => {
   logs.value = data;
 };
 
+const defaultCommissionRules = () => ([
+  { levelNo: 1, tierNo: 1, minSalesCents: 0, maxSalesCents: 9999999, rateBps: 300 },
+  { levelNo: 1, tierNo: 2, minSalesCents: 10000000, maxSalesCents: 29999999, rateBps: 500 },
+  { levelNo: 1, tierNo: 3, minSalesCents: 30000000, maxSalesCents: null, rateBps: 800 },
+  { levelNo: 2, tierNo: 1, minSalesCents: 0, maxSalesCents: 9999999, rateBps: 150 },
+  { levelNo: 2, tierNo: 2, minSalesCents: 10000000, maxSalesCents: 29999999, rateBps: 300 },
+  { levelNo: 2, tierNo: 3, minSalesCents: 30000000, maxSalesCents: null, rateBps: 500 },
+  { levelNo: 3, tierNo: 1, minSalesCents: 0, maxSalesCents: 9999999, rateBps: 100 },
+  { levelNo: 3, tierNo: 2, minSalesCents: 10000000, maxSalesCents: 29999999, rateBps: 200 },
+  { levelNo: 3, tierNo: 3, minSalesCents: 30000000, maxSalesCents: null, rateBps: 300 }
+]);
+
+const fetchCoursesForSales = async () => {
+  const { data } = await http.get("/courses");
+  coursesForSales.value = data || [];
+};
+
+const fetchCommissionRules = async () => {
+  const params = {};
+  if (commissionForm.value.organizationId) {
+    params.organizationId = commissionForm.value.organizationId;
+  }
+  const { data } = await http.get("/sales/commission-rules", { params });
+  salesCommissionRules.value = (data?.length ? data : defaultCommissionRules()).map((item) => ({
+    levelNo: Number(item.level_no ?? item.levelNo ?? 1),
+    tierNo: Number(item.tier_no ?? item.tierNo ?? 1),
+    minSalesCents: Number(item.min_sales_cents ?? item.minSalesCents ?? 0),
+    maxSalesCents: item.max_sales_cents ?? item.maxSalesCents ?? null,
+    rateBps: Number(item.rate_bps ?? item.rateBps ?? 0)
+  }));
+};
+
+const fetchSalesAgents = async () => {
+  const { data } = await http.get("/sales/agents");
+  salesAgents.value = data || [];
+};
+
+const fetchStudentSalesBindings = async () => {
+  const { data } = await http.get("/sales/student-bindings");
+  studentSalesBindings.value = data || [];
+};
+
+const fetchSalesOrders = async () => {
+  const params = {
+    status: salesOrderFilter.value.status || "",
+    paymentChannel: salesOrderFilter.value.paymentChannel || "",
+    source: salesOrderFilter.value.source || "",
+    courseId: salesOrderFilter.value.courseId || "",
+    salesUserId: salesOrderFilter.value.salesUserId || "",
+    keyword: salesOrderFilter.value.keyword || "",
+    startDate: salesOrderFilter.value.startDate || "",
+    endDate: salesOrderFilter.value.endDate || "",
+    page: salesOrderPagination.value.page,
+    pageSize: salesOrderPagination.value.pageSize
+  };
+  const { data } = await http.get("/sales/orders", { params });
+  salesOrders.value = data?.items || [];
+  salesOrderPagination.value = {
+    page: Number(data?.pagination?.page || 1),
+    pageSize: Number(data?.pagination?.pageSize || salesOrderPagination.value.pageSize || 20),
+    total: Number(data?.pagination?.total || 0)
+  };
+};
+
+const fetchCommissionReport = async () => {
+  const month = String(commissionReport.value.month || "").trim();
+  if (!month) return;
+  const { data } = await http.get("/sales/reports/commissions", {
+    params: {
+      month,
+      startDate: commissionReport.value.startDate || "",
+      endDate: commissionReport.value.endDate || "",
+      courseId: commissionReport.value.courseId || "",
+      salesUserId: commissionReport.value.salesUserId || "",
+      levelNo: commissionReport.value.levelNo || "",
+      groupBy: commissionReport.value.groupBy || "beneficiary"
+    }
+  });
+  commissionReportSummary.value = data?.summary || { paidOrderCount: 0, paidAmountCents: 0, commissionAmountCents: 0 };
+  commissionReportItems.value = data?.items || [];
+};
+
+const exportCommissionReportCsv = () => {
+  const dimensionLabel = {
+    beneficiary: "受益人",
+    course: "课程",
+    level: "层级"
+  }[commissionReport.value.groupBy || "beneficiary"];
+  const header = ["月份", dimensionLabel, "层级", "订单数", "销售额(分)", "分成额(分)"];
+  const rows = commissionReportItems.value.map((item) => [
+    commissionReport.value.month,
+    item.group_label || item.beneficiary_name || item.course_title || item.level_no,
+    item.level_no || "-",
+    item.order_count || 0,
+    item.sales_amount_cents || 0,
+    item.commission_amount_cents || 0
+  ]);
+  const csv = [header, ...rows]
+    .map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+
+  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `commission-report-${commissionReport.value.month || "report"}.csv`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+};
+
+const exportSalesOrdersCsv = async () => {
+  const response = await http.get("/sales/orders/export", {
+    params: {
+      status: salesOrderFilter.value.status || "",
+      paymentChannel: salesOrderFilter.value.paymentChannel || "",
+      source: salesOrderFilter.value.source || "",
+      keyword: salesOrderFilter.value.keyword || "",
+      startDate: salesOrderFilter.value.startDate || "",
+      endDate: salesOrderFilter.value.endDate || ""
+    },
+    responseType: "blob"
+  });
+
+  const blob = new Blob([response.data], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `sales-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+};
+
+const changeSalesOrderPage = async (delta) => {
+  const nextPage = Math.max(1, Number(salesOrderPagination.value.page || 1) + delta);
+  if (nextPage === salesOrderPagination.value.page) return;
+  salesOrderPagination.value.page = nextPage;
+  await fetchSalesOrders();
+};
+
+const applySalesOrderFilters = async () => {
+  salesOrderPagination.value.page = 1;
+  await fetchSalesOrders();
+};
+
 const refreshActiveTab = async () => {
   errorText.value = "";
   formMessage.value = "";
@@ -249,6 +422,18 @@ const refreshActiveTab = async () => {
     if (activeTab.value === "settings") await fetchSettings();
     if (activeTab.value === "permissions") await fetchPermissions();
     if (activeTab.value === "logs") await fetchLogs();
+    if (activeTab.value === "sales") {
+      await Promise.all([
+        fetchOrganizations(),
+        fetchDistricts(),
+        fetchUsers(),
+        fetchCoursesForSales(),
+        fetchSalesAgents(),
+        fetchStudentSalesBindings(),
+        fetchSalesOrders()
+      ]);
+      await Promise.all([fetchCommissionRules(), fetchCommissionReport()]);
+    }
   } catch (error) {
     errorText.value = toChineseMessage(error.response?.data?.message, "加载失败");
   }
@@ -553,6 +738,94 @@ const updatePermissions = async () => {
   await fetchPermissions();
 };
 
+const saveCommissionRules = async () => {
+  await http.put("/sales/commission-rules", {
+    organizationId: commissionForm.value.organizationId || null,
+    rules: salesCommissionRules.value.map((item) => ({
+      levelNo: Number(item.levelNo || 1),
+      tierNo: Number(item.tierNo || 1),
+      minSalesCents: Number(item.minSalesCents || 0),
+      maxSalesCents: item.maxSalesCents === "" || item.maxSalesCents === null ? null : Number(item.maxSalesCents),
+      rateBps: Number(item.rateBps || 0)
+    }))
+  });
+  formMessage.value = "分成规则已更新";
+  await fetchCommissionRules();
+};
+
+const saveSalesAgent = async () => {
+  await http.put(`/sales/agents/${salesAgentForm.value.salesUserId}`, {
+    parentSalesUserId: salesAgentForm.value.parentSalesUserId || null,
+    levelNo: Number(salesAgentForm.value.levelNo || 1)
+  });
+  salesAgentForm.value = { salesUserId: "", parentSalesUserId: "", levelNo: 1 };
+  formMessage.value = "销售员关系已保存";
+  await fetchSalesAgents();
+};
+
+const saveStudentSalesBinding = async () => {
+  await http.put(`/sales/student-bindings/${studentSalesForm.value.studentUserId}`, {
+    salesUserId: Number(studentSalesForm.value.salesUserId || 0)
+  });
+  studentSalesForm.value = { studentUserId: "", salesUserId: "" };
+  formMessage.value = "学员归属已保存";
+  await fetchStudentSalesBindings();
+};
+
+const createManualOrder = async () => {
+  await http.post("/sales/orders/manual", {
+    courseId: Number(manualOrderForm.value.courseId || 0),
+    buyerUserId: Number(manualOrderForm.value.buyerUserId || 0),
+    studentUserId: Number(manualOrderForm.value.studentUserId || 0),
+    amountCents: manualOrderForm.value.amountCents === "" ? null : Number(manualOrderForm.value.amountCents)
+  });
+  manualOrderForm.value = { courseId: "", buyerUserId: "", studentUserId: "", amountCents: "" };
+  formMessage.value = "手工订单已录入";
+  await fetchSalesOrders();
+};
+
+const markSalesOrderPaid = async (id) => {
+  await http.post(`/sales/orders/${id}/mark-paid`, {});
+  formMessage.value = "订单已标记为已支付";
+  await Promise.all([fetchSalesOrders(), fetchCommissionReport()]);
+};
+
+const salesUserCandidates = computed(() => users.value.filter((item) => !["student", "parent"].includes(item.role)));
+const studentUserCandidates = computed(() => users.value.filter((item) => item.role === "student"));
+const buyerUserCandidates = computed(() => users.value.filter((item) => ["student", "parent"].includes(item.role)));
+const commissionRulesByLevel = computed(() => {
+  const groups = { 1: [], 2: [], 3: [] };
+  salesCommissionRules.value.forEach((item) => {
+    const key = Number(item.levelNo || 1);
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(item);
+  });
+  Object.keys(groups).forEach((key) => {
+    groups[key] = groups[key].sort((a, b) => Number(a.tierNo || 0) - Number(b.tierNo || 0));
+  });
+  return groups;
+});
+
+const commissionReportTopItems = computed(() => {
+  return [...commissionReportItems.value]
+    .sort((a, b) => Number(b.commission_amount_cents || 0) - Number(a.commission_amount_cents || 0))
+    .slice(0, 5)
+    .map((item) => ({
+      ...item,
+      barWidth: 0
+    }));
+});
+
+const commissionReportTopMax = computed(() => {
+  return commissionReportTopItems.value.reduce((maxValue, item) => Math.max(maxValue, Number(item.commission_amount_cents || 0)), 0);
+});
+
+const commissionBarWidth = (value) => {
+  const maxValue = Number(commissionReportTopMax.value || 0);
+  if (maxValue <= 0) return 12;
+  return Math.max(12, Math.round((Number(value || 0) / maxValue) * 100));
+};
+
 watch(
   () => permissionForm.value.roleName,
   () => {
@@ -584,7 +857,25 @@ onMounted(async () => {
     userForm.value.organizationId = String(myOrganizationId.value || "");
     userForm.value.districtId = String(myDistrictId.value || "");
   }
+
+  if (["org_admin", "district_admin"].includes(currentUser.role)) {
+    commissionForm.value.organizationId = String(myOrganizationId.value || "");
+  }
 });
+
+watch(
+  () => commissionForm.value.organizationId,
+  async (value, oldValue) => {
+    if (activeTab.value !== "sales") return;
+    if (value === oldValue) return;
+    try {
+      await fetchCommissionRules();
+    } catch (error) {
+      errorText.value = toChineseMessage(error.response?.data?.message, "加载分成规则失败");
+    }
+  }
+);
+
 </script>
 
 <template>
@@ -601,8 +892,8 @@ onMounted(async () => {
     </header>
 
     <nav class="tabs">
-      <button v-for="tab in ['dashboard','organizations','districts','classrooms','users','guardianLinks','settings','permissions','logs']" :key="tab" :class="['tab', { active: activeTab === tab }]" @click="activeTab = tab; refreshActiveTab()">
-        {{ { dashboard: '概览', organizations: '机构设置', districts: '学区管理', classrooms: '固定教室', users: '系统帐号', guardianLinks: '家长学员关系', settings: '系统设置', permissions: '权限管理', logs: '系统日志' }[tab] }}
+      <button v-for="tab in ['dashboard','organizations','districts','classrooms','users','guardianLinks','sales','settings','permissions','logs']" :key="tab" :class="['tab', { active: activeTab === tab }]" @click="activeTab = tab; refreshActiveTab()">
+        {{ { dashboard: '概览', organizations: '机构设置', districts: '学区管理', classrooms: '固定教室', users: '系统帐号', guardianLinks: '家长学员关系', sales: '销售分成', settings: '系统设置', permissions: '权限管理', logs: '系统日志' }[tab] }}
       </button>
     </nav>
 
@@ -740,6 +1031,220 @@ onMounted(async () => {
           <button class="danger" @click="deleteGuardianLink(item.id)">删除</button>
         </li>
       </ul>
+    </section>
+
+    <section v-else-if="activeTab === 'sales'" class="card sales-card">
+      <h2>销售分成管理</h2>
+
+      <div class="sales-block">
+        <h3>分成规则（三层级 / 每级三档）</h3>
+        <form class="form form-wide" @submit.prevent="saveCommissionRules">
+          <select v-model="commissionForm.organizationId" :disabled="currentUser.role !== 'admin'">
+            <option value="">全局默认规则</option>
+            <option v-for="item in scopedOrganizations" :key="item.id" :value="item.id">{{ item.name }}</option>
+          </select>
+          <button type="submit">保存分成规则</button>
+        </form>
+
+        <div class="rule-level" v-for="level in [1,2,3]" :key="level">
+          <h4>{{ level }} 级分成</h4>
+          <div class="rule-row head">
+            <span>档位</span>
+            <span>销量下限（分）</span>
+            <span>销量上限（分）</span>
+            <span>提成比例（万分比）</span>
+          </div>
+          <div class="rule-row" v-for="item in commissionRulesByLevel[level]" :key="`${level}-${item.tierNo}`">
+            <span>第 {{ item.tierNo }} 档</span>
+            <input type="number" min="0" v-model.number="item.minSalesCents" />
+            <input type="number" min="0" v-model="item.maxSalesCents" placeholder="空=不封顶" />
+            <input type="number" min="0" v-model.number="item.rateBps" />
+          </div>
+        </div>
+      </div>
+
+      <div class="sales-grid">
+        <section class="sales-block">
+          <h3>销售员层级关系</h3>
+          <form class="form form-wide" @submit.prevent="saveSalesAgent">
+            <select v-model="salesAgentForm.salesUserId" required>
+              <option value="">选择销售员</option>
+              <option v-for="item in salesUserCandidates" :key="item.id" :value="item.id">{{ item.full_name }} / {{ item.role }}</option>
+            </select>
+            <select v-model="salesAgentForm.parentSalesUserId">
+              <option value="">上级销售（无）</option>
+              <option v-for="item in salesAgents" :key="item.sales_user_id" :value="item.sales_user_id">{{ item.sales_name || item.sales_user_id }}</option>
+            </select>
+            <select v-model="salesAgentForm.levelNo">
+              <option :value="1">一级销售</option>
+              <option :value="2">二级销售</option>
+              <option :value="3">三级销售</option>
+            </select>
+            <button type="submit">保存关系</button>
+          </form>
+          <ul class="list compact">
+            <li v-for="item in salesAgents" :key="item.sales_user_id">
+              <span>{{ item.sales_name || '-' }} / {{ item.level_no }}级 / 上级：{{ item.parent_sales_name || '无' }}</span>
+            </li>
+          </ul>
+        </section>
+
+        <section class="sales-block">
+          <h3>学员归属销售</h3>
+          <form class="form form-wide" @submit.prevent="saveStudentSalesBinding">
+            <select v-model="studentSalesForm.studentUserId" required>
+              <option value="">选择学员</option>
+              <option v-for="item in studentUserCandidates" :key="item.id" :value="item.id">{{ item.full_name }} / {{ item.email || '无邮箱' }}</option>
+            </select>
+            <select v-model="studentSalesForm.salesUserId" required>
+              <option value="">选择销售员</option>
+              <option v-for="item in salesAgents" :key="item.sales_user_id" :value="item.sales_user_id">{{ item.sales_name || item.sales_user_id }}</option>
+            </select>
+            <button type="submit">保存归属</button>
+          </form>
+          <ul class="list compact">
+            <li v-for="item in studentSalesBindings" :key="item.student_user_id">
+              <span>{{ item.student_name || '-' }} -> {{ item.sales_name || '-' }}</span>
+            </li>
+          </ul>
+        </section>
+      </div>
+
+      <div class="sales-block">
+        <h3>分成统计报表</h3>
+        <form class="form form-wide" @submit.prevent="fetchCommissionReport">
+          <input type="month" v-model="commissionReport.month" required />
+          <input type="date" v-model="commissionReport.startDate" />
+          <input type="date" v-model="commissionReport.endDate" />
+          <select v-model="commissionReport.groupBy">
+            <option value="beneficiary">按受益人汇总</option>
+            <option value="course">按课程汇总</option>
+            <option value="level">按层级汇总</option>
+          </select>
+          <select v-model="commissionReport.courseId">
+            <option value="">全部课程</option>
+            <option v-for="item in coursesForSales" :key="item.id" :value="item.id">{{ item.title }}</option>
+          </select>
+          <select v-model="commissionReport.salesUserId">
+            <option value="">全部销售员</option>
+            <option v-for="item in salesAgents" :key="item.sales_user_id" :value="item.sales_user_id">{{ item.sales_name || item.sales_user_id }}</option>
+          </select>
+          <select v-model="commissionReport.levelNo">
+            <option value="">全部层级</option>
+            <option value="1">1级</option>
+            <option value="2">2级</option>
+            <option value="3">3级</option>
+          </select>
+          <button type="submit">查询报表</button>
+          <button type="button" class="ghost" @click="exportCommissionReportCsv">导出 CSV</button>
+        </form>
+        <div class="sales-summary-grid">
+          <article class="sales-summary-card">
+            <small>已支付订单数</small>
+            <strong>{{ commissionReportSummary.paidOrderCount || 0 }}</strong>
+          </article>
+          <article class="sales-summary-card">
+            <small>已支付总额（分）</small>
+            <strong>{{ commissionReportSummary.paidAmountCents || 0 }}</strong>
+          </article>
+          <article class="sales-summary-card">
+            <small>总分成金额（分）</small>
+            <strong>{{ commissionReportSummary.commissionAmountCents || 0 }}</strong>
+          </article>
+        </div>
+        <div class="rank-chart">
+          <div class="rank-chart-head">
+            <h4>Top 5 分成排行</h4>
+            <small>按当前查询条件自动排序</small>
+          </div>
+          <div v-if="commissionReportTopItems.length" class="rank-bars">
+            <div v-for="item in commissionReportTopItems" :key="item.group_key || `${item.beneficiary_user_id}-${item.level_no}`" class="rank-bar-row">
+              <div class="rank-bar-label">
+                <span>{{ item.group_label || item.beneficiary_name || item.course_title || '-' }}</span>
+                <small>{{ item.commission_amount_cents || 0 }} 分</small>
+              </div>
+              <div class="rank-bar-track">
+                <div class="rank-bar-fill" :style="{ width: `${commissionBarWidth(item.commission_amount_cents)}%` }"></div>
+              </div>
+            </div>
+          </div>
+          <p v-else class="rank-empty">暂无数据</p>
+        </div>
+        <ul class="list compact">
+          <li v-for="item in commissionReportItems" :key="item.group_key || `${item.beneficiary_user_id}-${item.level_no}`">
+            <span>{{ item.group_label || item.beneficiary_name || '-' }} / {{ item.level_no ? `${item.level_no}级` : '全部层级' }} / 订单数: {{ item.order_count || 0 }} / 销售额: {{ item.sales_amount_cents || 0 }} / 分成: {{ item.commission_amount_cents || 0 }}</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sales-block">
+        <h3>后台录入订单</h3>
+        <form class="form form-wide" @submit.prevent="createManualOrder">
+          <select v-model="manualOrderForm.courseId" required>
+            <option value="">选择课程</option>
+            <option v-for="item in coursesForSales" :key="item.id" :value="item.id">{{ item.title }} / {{ item.id }}</option>
+          </select>
+          <select v-model="manualOrderForm.buyerUserId" required>
+            <option value="">选择购买人（学员或家长）</option>
+            <option v-for="item in buyerUserCandidates" :key="item.id" :value="item.id">{{ item.full_name }} / {{ item.role }}</option>
+          </select>
+          <select v-model="manualOrderForm.studentUserId" required>
+            <option value="">选择学员</option>
+            <option v-for="item in studentUserCandidates" :key="item.id" :value="item.id">{{ item.full_name }} / {{ item.email || '无邮箱' }}</option>
+          </select>
+          <input v-model="manualOrderForm.amountCents" type="number" min="0" placeholder="实付金额（分，可选）" />
+          <button type="submit">录入订单</button>
+        </form>
+      </div>
+
+      <div class="sales-block">
+        <h3>订单记录</h3>
+        <form class="form form-wide" @submit.prevent="applySalesOrderFilters">
+          <select v-model="salesOrderFilter.status">
+            <option value="">全部状态</option>
+            <option value="pending">pending</option>
+            <option value="paid">paid</option>
+            <option value="failed">failed</option>
+            <option value="closed">closed</option>
+          </select>
+          <select v-model="salesOrderFilter.paymentChannel">
+            <option value="">全部支付渠道</option>
+            <option value="wechat">wechat</option>
+            <option value="manual">manual</option>
+            <option value="internal">internal</option>
+          </select>
+          <select v-model="salesOrderFilter.source">
+            <option value="">全部来源</option>
+            <option value="purchase">purchase</option>
+            <option value="wechat">wechat</option>
+            <option value="manual_admin">manual_admin</option>
+          </select>
+          <select v-model="salesOrderFilter.courseId">
+            <option value="">全部课程</option>
+            <option v-for="item in coursesForSales" :key="item.id" :value="item.id">{{ item.title }}</option>
+          </select>
+          <select v-model="salesOrderFilter.salesUserId">
+            <option value="">全部销售员</option>
+            <option v-for="item in salesAgents" :key="item.sales_user_id" :value="item.sales_user_id">{{ item.sales_name || item.sales_user_id }}</option>
+          </select>
+          <input type="date" v-model="salesOrderFilter.startDate" />
+          <input type="date" v-model="salesOrderFilter.endDate" />
+          <input v-model="salesOrderFilter.keyword" placeholder="订单号/姓名/课程关键字" />
+          <button type="submit">筛选订单</button>
+          <button type="button" class="ghost" @click="exportSalesOrdersCsv">导出 CSV</button>
+        </form>
+        <ul class="list compact">
+          <li v-for="item in salesOrders" :key="item.id">
+            <span>#{{ item.order_no }} / {{ item.course_title || item.course_id }} / {{ item.student_name || '-' }} / 购买人: {{ item.buyer_name || '-' }} / 销售: {{ item.sales_name || '-' }} / 金额: {{ item.amount_cents || 0 }} / {{ item.status }}</span>
+            <button v-if="item.status !== 'paid'" class="ghost" @click="markSalesOrderPaid(item.id)">标记已支付</button>
+          </li>
+        </ul>
+        <div class="pager">
+          <button class="ghost" type="button" :disabled="salesOrderPagination.page <= 1" @click="changeSalesOrderPage(-1)">上一页</button>
+          <span>第 {{ salesOrderPagination.page }} 页 / 共 {{ Math.max(1, Math.ceil((salesOrderPagination.total || 0) / (salesOrderPagination.pageSize || 20))) }} 页 / 共 {{ salesOrderPagination.total || 0 }} 条</span>
+          <button class="ghost" type="button" :disabled="salesOrderPagination.page >= Math.max(1, Math.ceil((salesOrderPagination.total || 0) / (salesOrderPagination.pageSize || 20)))" @click="changeSalesOrderPage(1)">下一页</button>
+        </div>
+      </div>
     </section>
 
     <section v-else-if="activeTab === 'settings'" class="card">
@@ -1016,6 +1521,140 @@ input, select, textarea {
 
 .danger {
   background: #b91c1c;
+}
+
+.sales-card {
+  display: grid;
+  gap: 14px;
+}
+
+.sales-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.sales-block {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.sales-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.sales-summary-card {
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.sales-summary-card small {
+  color: #64748b;
+}
+
+.sales-summary-card strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 20px;
+}
+
+.rank-chart {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  display: grid;
+  gap: 10px;
+}
+
+.rank-chart-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.rank-chart-head h4 {
+  margin: 0;
+}
+
+.rank-chart-head small,
+.rank-empty {
+  color: #64748b;
+}
+
+.rank-bars {
+  display: grid;
+  gap: 10px;
+}
+
+.rank-bar-row {
+  display: grid;
+  gap: 6px;
+}
+
+.rank-bar-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  color: #111827;
+}
+
+.rank-bar-label small {
+  color: #64748b;
+}
+
+.rank-bar-track {
+  height: 12px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.rank-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0f766e 0%, #14b8a6 100%);
+  transition: width 180ms ease;
+}
+
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.rule-level {
+  border: 1px dashed #d1d5db;
+  border-radius: 10px;
+  padding: 10px;
+  margin-top: 10px;
+}
+
+.rule-level h4 {
+  margin: 0 0 8px;
+}
+
+.rule-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.rule-row.head {
+  color: #4b5563;
+  font-size: 12px;
 }
 
 .error { color: #b91c1c; margin-bottom: 8px; }

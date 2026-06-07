@@ -8,6 +8,7 @@ import courseRoutes from "./routes/courses.js";
 import attendanceRoutes from "./routes/attendance.js";
 import classroomRoutes from "./routes/classroom.js";
 import adminRoutes from "./routes/admin.js";
+import salesRoutes from "./routes/sales.js";
 
 dotenv.config();
 
@@ -31,6 +32,7 @@ app.use("/api/courses", courseRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/classroom", classroomRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/sales", salesRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ message: "Not found" });
