@@ -47,7 +47,7 @@ const resolveServicePayload = (payload) => {
 const resolveServiceResultMessage = (payload) => {
   const servicePayload = resolveServicePayload(payload);
   if (!servicePayload) return "";
-  const value = servicePayload.message ?? servicePayload.result ?? servicePayload.value ?? servicePayload.sid ?? "";
+  const value = servicePayload.message ?? servicePayload.result ?? servicePayload.value ?? servicePayload.sid ?? servicePayload.raw ?? "";
   return String(value || "").trim();
 };
 
@@ -77,8 +77,12 @@ const openMeetingsRequest = async (config, path, options = {}) => {
   const text = await response.text();
   const payload = parseJsonSafely(text) ?? { raw: text };
   if (!response.ok) {
-    const message = resolveServiceResultMessage(payload) || `OpenMeetings request failed with status ${response.status}`;
-    throw new Error(message);
+    const message = resolveServiceResultMessage(payload) || String(text || "").trim() || `OpenMeetings request failed with status ${response.status}`;
+    const shortMessage = message.length > 260 ? `${message.slice(0, 260)}...` : message;
+    const error = new Error(shortMessage || `OpenMeetings request failed with status ${response.status}`);
+    error.status = response.status;
+    error.responseText = text;
+    throw error;
   }
   return payload;
 };
@@ -127,7 +131,7 @@ export const createOpenMeetingsRoom = async ({
   }
 
   const sid = await loginOpenMeetings(config);
-  const roomPayload = {
+  const roomPayloadBase = {
     name: String(name || "").trim(),
     type: normalizeRoomType(type),
     capacity: Number.isFinite(Number(capacity)) && Number(capacity) > 0 ? Number(capacity) : 25,
@@ -139,17 +143,55 @@ export const createOpenMeetingsRoom = async ({
     externalId: String(externalId || "").trim()
   };
 
-  if (!roomPayload.name) {
+  if (!roomPayloadBase.name) {
     throw new Error("name is required");
   }
 
-  const payload = await openMeetingsRequest(config, "/room", {
-    method: "POST",
-    searchParams: { sid },
-    formData: {
-      room: JSON.stringify(roomPayload)
+  const roomTypeNumberMap = {
+    conference: 1,
+    presentation: 2,
+    interview: 3
+  };
+
+  const roomPayloadCandidates = [
+    roomPayloadBase,
+    {
+      name: roomPayloadBase.name,
+      type: roomPayloadBase.type,
+      capacity: roomPayloadBase.capacity,
+      comment: roomPayloadBase.comment
+    },
+    {
+      name: roomPayloadBase.name,
+      type: roomTypeNumberMap[roomPayloadBase.type] || 1,
+      capacity: roomPayloadBase.capacity,
+      comment: roomPayloadBase.comment
     }
-  });
+  ];
+
+  let payload = null;
+  let lastError = null;
+  for (const roomPayload of roomPayloadCandidates) {
+    try {
+      payload = await openMeetingsRequest(config, "/room", {
+        method: "POST",
+        searchParams: { sid },
+        formData: {
+          room: JSON.stringify(roomPayload)
+        }
+      });
+      break;
+    } catch (error) {
+      lastError = error;
+      if (Number(error?.status || 0) !== 400) {
+        throw error;
+      }
+    }
+  }
+
+  if (!payload) {
+    throw lastError || new Error("Failed to create OpenMeetings room");
+  }
 
   const roomId = Number(payload.id || payload.roomId || payload?.room?.id || 0);
   if (!roomId) {
@@ -164,9 +206,9 @@ export const createOpenMeetingsRoom = async ({
   return {
     roomId,
     meetingUrl,
-    roomName: String(payload.name || roomPayload.name),
-    roomType: normalizeRoomType(payload.type || roomPayload.type),
-    roomPayload
+    roomName: String(payload.name || roomPayloadBase.name),
+    roomType: normalizeRoomType(payload.type || roomPayloadBase.type),
+    roomPayload: roomPayloadBase
   };
 };
 
