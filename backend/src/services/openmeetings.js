@@ -33,15 +33,28 @@ const parseJsonSafely = (text) => {
   }
 };
 
+const resolveServicePayload = (payload) => {
+  if (!payload || typeof payload !== "object") return null;
+  if (payload.serviceResult && typeof payload.serviceResult === "object") {
+    return payload.serviceResult;
+  }
+  if (payload.result && typeof payload.result === "object") {
+    return payload.result;
+  }
+  return payload;
+};
+
 const resolveServiceResultMessage = (payload) => {
-  if (!payload || typeof payload !== "object") return "";
-  const value = payload.message ?? payload.result ?? payload.value ?? payload.sid ?? "";
+  const servicePayload = resolveServicePayload(payload);
+  if (!servicePayload) return "";
+  const value = servicePayload.message ?? servicePayload.result ?? servicePayload.value ?? servicePayload.sid ?? "";
   return String(value || "").trim();
 };
 
 const resolveServiceResultType = (payload) => {
-  if (!payload || typeof payload !== "object") return "";
-  return String(payload.type || payload.status || "").trim().toUpperCase();
+  const servicePayload = resolveServicePayload(payload);
+  if (!servicePayload) return "";
+  return String(servicePayload.type || servicePayload.status || "").trim().toUpperCase();
 };
 
 const openMeetingsRequest = async (config, path, options = {}) => {
@@ -80,12 +93,13 @@ const loginOpenMeetings = async (config) => {
   });
 
   const resultType = resolveServiceResultType(payload);
-  const sid = resolveServiceResultMessage(payload);
+  const resultMessage = resolveServiceResultMessage(payload);
+  const sid = resultMessage;
   if (resultType && resultType !== "SUCCESS") {
-    throw new Error("Failed to authenticate with OpenMeetings");
+    throw new Error(`Failed to authenticate with OpenMeetings: ${resultMessage || resultType}`);
   }
   if (!sid) {
-    throw new Error("Failed to authenticate with OpenMeetings");
+    throw new Error("Failed to authenticate with OpenMeetings: empty sid returned");
   }
   return sid;
 };
