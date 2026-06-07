@@ -3,6 +3,7 @@ import express from "express";
 
 import pool from "../config/db.js";
 import { requireAuth } from "../middleware/auth.js";
+import { hasPermission, requirePermission } from "../middleware/permissions.js";
 import {
   createPaidSalesOrder,
   createWechatPendingOrder,
@@ -178,7 +179,7 @@ router.post("/wechat/notify", async (req, res) => {
 
 router.use(requireAuth);
 
-router.get("/commission-rules", async (req, res) => {
+router.get("/commission-rules", requirePermission("sales.rules.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -202,7 +203,7 @@ router.get("/commission-rules", async (req, res) => {
   }
 });
 
-router.put("/commission-rules", async (req, res) => {
+router.put("/commission-rules", requirePermission("sales.rules.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -246,7 +247,7 @@ router.put("/commission-rules", async (req, res) => {
   }
 });
 
-router.get("/agents", async (req, res) => {
+router.get("/agents", requirePermission("sales.agents.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -272,7 +273,7 @@ router.get("/agents", async (req, res) => {
   }
 });
 
-router.put("/agents/:salesUserId", async (req, res) => {
+router.put("/agents/:salesUserId", requirePermission("sales.agents.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -329,7 +330,7 @@ router.put("/agents/:salesUserId", async (req, res) => {
   }
 });
 
-router.get("/student-bindings", async (req, res) => {
+router.get("/student-bindings", requirePermission("sales.bindings.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -357,7 +358,7 @@ router.get("/student-bindings", async (req, res) => {
   }
 });
 
-router.put("/student-bindings/:studentUserId", async (req, res) => {
+router.put("/student-bindings/:studentUserId", requirePermission("sales.bindings.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -429,6 +430,9 @@ router.get("/orders", async (req, res) => {
 
   try {
     if (canManage(req)) {
+      const allowed = await hasPermission(role, "sales.orders.view");
+      if (!allowed) return res.status(403).json({ message: "Permission denied" });
+
       const scope = await resolveManageScope(req);
       if (!scope) return res.status(403).json({ message: "Permission denied" });
       const scoped = buildScope(scope, "o");
@@ -528,7 +532,7 @@ router.get("/orders", async (req, res) => {
   }
 });
 
-router.get("/orders/export", async (req, res) => {
+router.get("/orders/export", requirePermission("sales.orders.view"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -590,7 +594,7 @@ router.get("/orders/export", async (req, res) => {
   }
 });
 
-router.post("/orders/:id/mark-paid", async (req, res) => {
+router.post("/orders/:id/mark-paid", requirePermission("sales.orders.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -623,7 +627,7 @@ router.post("/orders/:id/mark-paid", async (req, res) => {
   }
 });
 
-router.get("/reports/commissions", async (req, res) => {
+router.get("/reports/commissions", requirePermission("sales.reports.view"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -759,7 +763,7 @@ router.get("/reports/commissions", async (req, res) => {
   }
 });
 
-router.post("/orders/manual", async (req, res) => {
+router.post("/orders/manual", requirePermission("sales.orders.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);

@@ -167,6 +167,66 @@ INSERT INTO users (full_name, email, password_hash, role)
 VALUES ('Admin User', 'admin@example.com', '$2a$10$QwQ3vq2zMw2XkV4hIqV6Ue7YfPyD2Q4y0hRt0t.eoDWFj7R96LJ5O', 'admin')
 ON DUPLICATE KEY UPDATE email = email;
 
+INSERT INTO role_permissions (role_name, permission_key, permission_value)
+SELECT seed.role_name, seed.permission_key, 1
+FROM (
+  SELECT 'admin' AS role_name, 'system.manage' AS permission_key
+  UNION ALL SELECT 'admin', 'organization.manage'
+  UNION ALL SELECT 'admin', 'district.manage'
+  UNION ALL SELECT 'admin', 'user.manage'
+  UNION ALL SELECT 'admin', 'course.manage'
+  UNION ALL SELECT 'admin', 'course.view'
+  UNION ALL SELECT 'admin', 'replay.manage'
+  UNION ALL SELECT 'admin', 'replay.view'
+  UNION ALL SELECT 'admin', 'attendance.manage'
+  UNION ALL SELECT 'admin', 'attendance.self'
+  UNION ALL SELECT 'admin', 'settings.manage'
+  UNION ALL SELECT 'admin', 'permission.manage'
+  UNION ALL SELECT 'admin', 'log.view'
+  UNION ALL SELECT 'admin', 'sales.rules.manage'
+  UNION ALL SELECT 'admin', 'sales.agents.manage'
+  UNION ALL SELECT 'admin', 'sales.bindings.manage'
+  UNION ALL SELECT 'admin', 'sales.reports.view'
+  UNION ALL SELECT 'admin', 'sales.orders.manage'
+  UNION ALL SELECT 'admin', 'sales.orders.view'
+  UNION ALL SELECT 'org_admin', 'system.manage'
+  UNION ALL SELECT 'org_admin', 'organization.manage'
+  UNION ALL SELECT 'org_admin', 'district.manage'
+  UNION ALL SELECT 'org_admin', 'user.manage'
+  UNION ALL SELECT 'org_admin', 'log.view'
+  UNION ALL SELECT 'org_admin', 'settings.manage'
+  UNION ALL SELECT 'org_admin', 'permission.manage'
+  UNION ALL SELECT 'org_admin', 'sales.rules.manage'
+  UNION ALL SELECT 'org_admin', 'sales.agents.manage'
+  UNION ALL SELECT 'org_admin', 'sales.bindings.manage'
+  UNION ALL SELECT 'org_admin', 'sales.reports.view'
+  UNION ALL SELECT 'org_admin', 'sales.orders.manage'
+  UNION ALL SELECT 'org_admin', 'sales.orders.view'
+  UNION ALL SELECT 'district_admin', 'system.manage'
+  UNION ALL SELECT 'district_admin', 'district.manage'
+  UNION ALL SELECT 'district_admin', 'user.manage'
+  UNION ALL SELECT 'district_admin', 'log.view'
+  UNION ALL SELECT 'district_admin', 'settings.manage'
+  UNION ALL SELECT 'district_admin', 'sales.rules.manage'
+  UNION ALL SELECT 'district_admin', 'sales.agents.manage'
+  UNION ALL SELECT 'district_admin', 'sales.bindings.manage'
+  UNION ALL SELECT 'district_admin', 'sales.reports.view'
+  UNION ALL SELECT 'district_admin', 'sales.orders.manage'
+  UNION ALL SELECT 'district_admin', 'sales.orders.view'
+  UNION ALL SELECT 'teacher', 'course.manage'
+  UNION ALL SELECT 'teacher', 'course.view'
+  UNION ALL SELECT 'teacher', 'replay.manage'
+  UNION ALL SELECT 'teacher', 'attendance.manage'
+  UNION ALL SELECT 'assistant', 'course.view'
+  UNION ALL SELECT 'assistant', 'attendance.manage'
+  UNION ALL SELECT 'student', 'course.view'
+  UNION ALL SELECT 'student', 'replay.view'
+  UNION ALL SELECT 'student', 'attendance.self'
+  UNION ALL SELECT 'parent', 'course.view'
+  UNION ALL SELECT 'parent', 'replay.view'
+) AS seed
+ON DUPLICATE KEY UPDATE permission_value = VALUES(permission_value);
+
 ALTER TABLE users
   MODIFY COLUMN role VARCHAR(40) NOT NULL;
 

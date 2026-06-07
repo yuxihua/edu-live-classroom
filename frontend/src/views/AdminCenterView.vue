@@ -5,6 +5,7 @@ import http from "../api/http.js";
 
 const router = useRouter();
 const activeTab = ref("dashboard");
+const activeSalesTab = ref("rules");
 const dashboard = ref({ districts: 0, organizations: 0, users: 0, courses: 0, logs: 0 });
 const districts = ref([]);
 const organizations = ref([]);
@@ -59,6 +60,26 @@ const currentUser = JSON.parse(localStorage.getItem("user") || "{}");
 
 const roleOptions = ["admin", "org_admin", "district_admin", "teacher", "assistant", "student", "parent"];
 const categoryOptions = ["school", "center", "district", "company"];
+const mainTabs = [
+  { key: "dashboard", label: "概览", permissionKey: "system.manage" },
+  { key: "organizations", label: "机构设置", permissionKey: "organization.manage" },
+  { key: "districts", label: "学区管理", permissionKey: "district.manage" },
+  { key: "classrooms", label: "固定教室", permissionKey: "organization.manage" },
+  { key: "users", label: "系统帐号", permissionKey: "user.manage" },
+  { key: "guardianLinks", label: "家长学员关系", permissionKey: "user.manage" },
+  { key: "sales", label: "销售分成" },
+  { key: "settings", label: "系统设置", permissionKey: "settings.manage" },
+  { key: "permissions", label: "权限管理", permissionKey: "permission.manage" },
+  { key: "logs", label: "系统日志", permissionKey: "log.view" }
+];
+const salesSubTabs = [
+  { key: "rules", label: "分成规则", permissionKey: "sales.rules.manage" },
+  { key: "agents", label: "销售层级", permissionKey: "sales.agents.manage" },
+  { key: "bindings", label: "学员归属", permissionKey: "sales.bindings.manage" },
+  { key: "reports", label: "分成报表", permissionKey: "sales.reports.view" },
+  { key: "manualOrder", label: "订单录入", permissionKey: "sales.orders.manage" },
+  { key: "orders", label: "订单记录", permissionKey: "sales.orders.view" }
+];
 const permissionGroups = [
   {
     key: "platform",
@@ -89,6 +110,18 @@ const permissionGroups = [
       { key: "replay.view", label: "回放查看" },
       { key: "attendance.manage", label: "签到管理" },
       { key: "attendance.self", label: "个人签到" }
+    ]
+  },
+  {
+    key: "sales",
+    title: "销售分成",
+    items: [
+      { key: "sales.rules.manage", label: "分成规则管理" },
+      { key: "sales.agents.manage", label: "销售层级管理" },
+      { key: "sales.bindings.manage", label: "学员归属管理" },
+      { key: "sales.reports.view", label: "分成报表查看" },
+      { key: "sales.orders.manage", label: "销售订单管理" },
+      { key: "sales.orders.view", label: "销售订单查看" }
     ]
   }
 ];
@@ -247,6 +280,11 @@ const fetchPermissions = async () => {
   const { data } = await http.get("/admin/permissions");
   permissions.value = data;
   applyPermissionsForRole();
+};
+
+const fetchPermissionMatrix = async () => {
+  const { data } = await http.get("/admin/permissions");
+  permissions.value = data || [];
 };
 
 const fetchLogs = async () => {
@@ -826,6 +864,62 @@ const commissionBarWidth = (value) => {
   return Math.max(12, Math.round((Number(value || 0) / maxValue) * 100));
 };
 
+const currentRolePermissions = computed(() => {
+  const roleName = String(currentUser.role || "");
+  return permissions.value.filter((item) => item.role_name === roleName && Number(item.permission_value) === 1);
+});
+
+const hasRolePermissionData = computed(() => {
+  const roleName = String(currentUser.role || "");
+  return permissions.value.some((item) => item.role_name === roleName);
+});
+
+const grantedPermissionSet = computed(() => {
+  return new Set(currentRolePermissions.value.map((item) => item.permission_key));
+});
+
+const canAccessPermission = (permissionKey) => {
+  if (!permissionKey) return true;
+  if (currentUser.role === "admin") return true;
+  if (!hasRolePermissionData.value) return true;
+  return grantedPermissionSet.value.has(permissionKey);
+};
+
+const visibleSalesSubTabs = computed(() => {
+  return salesSubTabs.filter((item) => canAccessPermission(item.permissionKey));
+});
+
+const visibleMainTabs = computed(() => {
+  return mainTabs.filter((item) => {
+    if (item.key === "sales") {
+      return visibleSalesSubTabs.value.length > 0;
+    }
+    return canAccessPermission(item.permissionKey);
+  });
+});
+
+const activeSalesTabLabel = computed(() => {
+  return salesSubTabs.find((item) => item.key === activeSalesTab.value)?.label || "分成规则";
+});
+
+const setActiveTab = async (tabKey) => {
+  const allowedTabs = visibleMainTabs.value.map((item) => item.key);
+  if (!allowedTabs.includes(tabKey)) return;
+  activeTab.value = tabKey;
+  if (tabKey === "sales") {
+    const firstSalesTab = visibleSalesSubTabs.value[0]?.key || "rules";
+    if (!visibleSalesSubTabs.value.some((item) => item.key === activeSalesTab.value)) {
+      activeSalesTab.value = firstSalesTab;
+    }
+  }
+  await refreshActiveTab();
+};
+
+const setActiveSalesTab = (subTabKey) => {
+  if (!visibleSalesSubTabs.value.some((item) => item.key === subTabKey)) return;
+  activeSalesTab.value = subTabKey;
+};
+
 watch(
   () => permissionForm.value.roleName,
   () => {
@@ -842,7 +936,16 @@ const logout = () => {
 onMounted(refreshActiveTab);
 onMounted(async () => {
   initializePermissionGroupCollapse();
-  await Promise.all([fetchOrganizations(), fetchDistricts()]);
+  await Promise.all([fetchOrganizations(), fetchDistricts(), fetchPermissionMatrix()]);
+
+  const allowedMainTabs = visibleMainTabs.value.map((item) => item.key);
+  if (!allowedMainTabs.includes(activeTab.value)) {
+    activeTab.value = allowedMainTabs[0] || "dashboard";
+  }
+
+  if (activeTab.value === "sales" && !visibleSalesSubTabs.value.some((item) => item.key === activeSalesTab.value)) {
+    activeSalesTab.value = visibleSalesSubTabs.value[0]?.key || "rules";
+  }
 
   if (currentUser.role === "org_admin") {
     districtForm.value.organizationId = String(myOrganizationId.value || "");
@@ -861,6 +964,8 @@ onMounted(async () => {
   if (["org_admin", "district_admin"].includes(currentUser.role)) {
     commissionForm.value.organizationId = String(myOrganizationId.value || "");
   }
+
+  await refreshActiveTab();
 });
 
 watch(
@@ -892,8 +997,13 @@ watch(
     </header>
 
     <nav class="tabs">
-      <button v-for="tab in ['dashboard','organizations','districts','classrooms','users','guardianLinks','sales','settings','permissions','logs']" :key="tab" :class="['tab', { active: activeTab === tab }]" @click="activeTab = tab; refreshActiveTab()">
-        {{ { dashboard: '概览', organizations: '机构设置', districts: '学区管理', classrooms: '固定教室', users: '系统帐号', guardianLinks: '家长学员关系', sales: '销售分成', settings: '系统设置', permissions: '权限管理', logs: '系统日志' }[tab] }}
+      <button
+        v-for="tab in visibleMainTabs"
+        :key="tab.key"
+        :class="['tab', { active: activeTab === tab.key }]"
+        @click="setActiveTab(tab.key)"
+      >
+        {{ tab.label }}
       </button>
     </nav>
 
@@ -1034,9 +1144,19 @@ watch(
     </section>
 
     <section v-else-if="activeTab === 'sales'" class="card sales-card">
-      <h2>销售分成管理</h2>
+      <h2>销售分成管理 · {{ activeSalesTabLabel }}</h2>
+      <nav class="sub-tabs">
+        <button
+          v-for="tab in visibleSalesSubTabs"
+          :key="tab.key"
+          :class="['sub-tab', { active: activeSalesTab === tab.key }]"
+          @click="setActiveSalesTab(tab.key)"
+        >
+          {{ tab.label }}
+        </button>
+      </nav>
 
-      <div class="sales-block">
+      <div v-if="activeSalesTab === 'rules'" class="sales-block">
         <h3>分成规则（三层级 / 每级三档）</h3>
         <form class="form form-wide" @submit.prevent="saveCommissionRules">
           <select v-model="commissionForm.organizationId" :disabled="currentUser.role !== 'admin'">
@@ -1063,54 +1183,52 @@ watch(
         </div>
       </div>
 
-      <div class="sales-grid">
-        <section class="sales-block">
-          <h3>销售员层级关系</h3>
-          <form class="form form-wide" @submit.prevent="saveSalesAgent">
-            <select v-model="salesAgentForm.salesUserId" required>
-              <option value="">选择销售员</option>
-              <option v-for="item in salesUserCandidates" :key="item.id" :value="item.id">{{ item.full_name }} / {{ item.role }}</option>
-            </select>
-            <select v-model="salesAgentForm.parentSalesUserId">
-              <option value="">上级销售（无）</option>
-              <option v-for="item in salesAgents" :key="item.sales_user_id" :value="item.sales_user_id">{{ item.sales_name || item.sales_user_id }}</option>
-            </select>
-            <select v-model="salesAgentForm.levelNo">
-              <option :value="1">一级销售</option>
-              <option :value="2">二级销售</option>
-              <option :value="3">三级销售</option>
-            </select>
-            <button type="submit">保存关系</button>
-          </form>
-          <ul class="list compact">
-            <li v-for="item in salesAgents" :key="item.sales_user_id">
-              <span>{{ item.sales_name || '-' }} / {{ item.level_no }}级 / 上级：{{ item.parent_sales_name || '无' }}</span>
-            </li>
-          </ul>
-        </section>
+      <section v-else-if="activeSalesTab === 'agents'" class="sales-block">
+        <h3>销售员层级关系</h3>
+        <form class="form form-wide" @submit.prevent="saveSalesAgent">
+          <select v-model="salesAgentForm.salesUserId" required>
+            <option value="">选择销售员</option>
+            <option v-for="item in salesUserCandidates" :key="item.id" :value="item.id">{{ item.full_name }} / {{ item.role }}</option>
+          </select>
+          <select v-model="salesAgentForm.parentSalesUserId">
+            <option value="">上级销售（无）</option>
+            <option v-for="item in salesAgents" :key="item.sales_user_id" :value="item.sales_user_id">{{ item.sales_name || item.sales_user_id }}</option>
+          </select>
+          <select v-model="salesAgentForm.levelNo">
+            <option :value="1">一级销售</option>
+            <option :value="2">二级销售</option>
+            <option :value="3">三级销售</option>
+          </select>
+          <button type="submit">保存关系</button>
+        </form>
+        <ul class="list compact">
+          <li v-for="item in salesAgents" :key="item.sales_user_id">
+            <span>{{ item.sales_name || '-' }} / {{ item.level_no }}级 / 上级：{{ item.parent_sales_name || '无' }}</span>
+          </li>
+        </ul>
+      </section>
 
-        <section class="sales-block">
-          <h3>学员归属销售</h3>
-          <form class="form form-wide" @submit.prevent="saveStudentSalesBinding">
-            <select v-model="studentSalesForm.studentUserId" required>
-              <option value="">选择学员</option>
-              <option v-for="item in studentUserCandidates" :key="item.id" :value="item.id">{{ item.full_name }} / {{ item.email || '无邮箱' }}</option>
-            </select>
-            <select v-model="studentSalesForm.salesUserId" required>
-              <option value="">选择销售员</option>
-              <option v-for="item in salesAgents" :key="item.sales_user_id" :value="item.sales_user_id">{{ item.sales_name || item.sales_user_id }}</option>
-            </select>
-            <button type="submit">保存归属</button>
-          </form>
-          <ul class="list compact">
-            <li v-for="item in studentSalesBindings" :key="item.student_user_id">
-              <span>{{ item.student_name || '-' }} -> {{ item.sales_name || '-' }}</span>
-            </li>
-          </ul>
-        </section>
-      </div>
+      <section v-else-if="activeSalesTab === 'bindings'" class="sales-block">
+        <h3>学员归属销售</h3>
+        <form class="form form-wide" @submit.prevent="saveStudentSalesBinding">
+          <select v-model="studentSalesForm.studentUserId" required>
+            <option value="">选择学员</option>
+            <option v-for="item in studentUserCandidates" :key="item.id" :value="item.id">{{ item.full_name }} / {{ item.email || '无邮箱' }}</option>
+          </select>
+          <select v-model="studentSalesForm.salesUserId" required>
+            <option value="">选择销售员</option>
+            <option v-for="item in salesAgents" :key="item.sales_user_id" :value="item.sales_user_id">{{ item.sales_name || item.sales_user_id }}</option>
+          </select>
+          <button type="submit">保存归属</button>
+        </form>
+        <ul class="list compact">
+          <li v-for="item in studentSalesBindings" :key="item.student_user_id">
+            <span>{{ item.student_name || '-' }} -> {{ item.sales_name || '-' }}</span>
+          </li>
+        </ul>
+      </section>
 
-      <div class="sales-block">
+      <div v-else-if="activeSalesTab === 'reports'" class="sales-block">
         <h3>分成统计报表</h3>
         <form class="form form-wide" @submit.prevent="fetchCommissionReport">
           <input type="month" v-model="commissionReport.month" required />
@@ -1177,7 +1295,7 @@ watch(
         </ul>
       </div>
 
-      <div class="sales-block">
+      <div v-else-if="activeSalesTab === 'manualOrder'" class="sales-block">
         <h3>后台录入订单</h3>
         <form class="form form-wide" @submit.prevent="createManualOrder">
           <select v-model="manualOrderForm.courseId" required>
@@ -1197,7 +1315,7 @@ watch(
         </form>
       </div>
 
-      <div class="sales-block">
+      <div v-else class="sales-block">
         <h3>订单记录</h3>
         <form class="form form-wide" @submit.prevent="applySalesOrderFilters">
           <select v-model="salesOrderFilter.status">
@@ -1353,6 +1471,13 @@ watch(
   margin-bottom: 16px;
 }
 
+.sub-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
 .tab, button {
   border: none;
   border-radius: 8px;
@@ -1365,6 +1490,16 @@ watch(
 
 .tab.active {
   background: #115e59;
+}
+
+.sub-tab {
+  background: #e5e7eb;
+  color: #1f2937;
+}
+
+.sub-tab.active {
+  background: #0f766e;
+  color: #ffffff;
 }
 
 .ghost {

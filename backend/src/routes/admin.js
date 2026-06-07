@@ -2,6 +2,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import pool from "../config/db.js";
 import { requireAuth } from "../middleware/auth.js";
+import { clearPermissionCache, requirePermission } from "../middleware/permissions.js";
 
 const router = express.Router();
 const MANAGE_ROLES = ["admin", "org_admin", "district_admin"];
@@ -140,12 +141,18 @@ router.get("/meta", async (req, res) => {
       "settings.manage",
       "permission.manage",
       "attendance.manage",
-      "replay.manage"
+      "replay.manage",
+      "sales.rules.manage",
+      "sales.agents.manage",
+      "sales.bindings.manage",
+      "sales.reports.view",
+      "sales.orders.manage",
+      "sales.orders.view"
     ]
   });
 });
 
-router.get("/dashboard", async (req, res) => {
+router.get("/dashboard", requirePermission("system.manage"), async (req, res) => {
   if (!canManage(req)) {
     return res.status(403).json({ message: "Permission denied" });
   }
@@ -171,7 +178,7 @@ router.get("/dashboard", async (req, res) => {
   }
 });
 
-router.get("/districts", async (req, res) => {
+router.get("/districts", requirePermission("district.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -195,7 +202,7 @@ router.get("/districts", async (req, res) => {
   }
 });
 
-router.post("/districts", async (req, res) => {
+router.post("/districts", requirePermission("district.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -221,7 +228,7 @@ router.post("/districts", async (req, res) => {
   }
 });
 
-router.put("/districts/:id", async (req, res) => {
+router.put("/districts/:id", requirePermission("district.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -249,7 +256,7 @@ router.put("/districts/:id", async (req, res) => {
   }
 });
 
-router.delete("/districts/:id", async (req, res) => {
+router.delete("/districts/:id", requirePermission("district.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -271,7 +278,7 @@ router.delete("/districts/:id", async (req, res) => {
   }
 });
 
-router.get("/organizations", async (req, res) => {
+router.get("/organizations", requirePermission("organization.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -295,7 +302,7 @@ router.get("/organizations", async (req, res) => {
   }
 });
 
-router.get("/classrooms", async (req, res) => {
+router.get("/classrooms", requirePermission("organization.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -322,7 +329,7 @@ router.get("/classrooms", async (req, res) => {
   }
 });
 
-router.post("/classrooms", async (req, res) => {
+router.post("/classrooms", requirePermission("organization.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -349,7 +356,7 @@ router.post("/classrooms", async (req, res) => {
   }
 });
 
-router.put("/classrooms/:id", async (req, res) => {
+router.put("/classrooms/:id", requirePermission("organization.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -384,7 +391,7 @@ router.put("/classrooms/:id", async (req, res) => {
   }
 });
 
-router.delete("/classrooms/:id", async (req, res) => {
+router.delete("/classrooms/:id", requirePermission("organization.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -410,7 +417,7 @@ router.delete("/classrooms/:id", async (req, res) => {
   }
 });
 
-router.post("/organizations", async (req, res) => {
+router.post("/organizations", requirePermission("organization.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -431,7 +438,7 @@ router.post("/organizations", async (req, res) => {
   }
 });
 
-router.put("/organizations/:id", async (req, res) => {
+router.put("/organizations/:id", requirePermission("organization.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -458,7 +465,7 @@ router.put("/organizations/:id", async (req, res) => {
   }
 });
 
-router.delete("/organizations/:id", async (req, res) => {
+router.delete("/organizations/:id", requirePermission("organization.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -480,7 +487,7 @@ router.delete("/organizations/:id", async (req, res) => {
   }
 });
 
-router.get("/users", async (req, res) => {
+router.get("/users", requirePermission("user.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -506,7 +513,7 @@ router.get("/users", async (req, res) => {
   }
 });
 
-router.get("/guardian-links", async (req, res) => {
+router.get("/guardian-links", requirePermission("user.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -533,7 +540,7 @@ router.get("/guardian-links", async (req, res) => {
   }
 });
 
-router.post("/guardian-links", async (req, res) => {
+router.post("/guardian-links", requirePermission("user.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -560,7 +567,7 @@ router.post("/guardian-links", async (req, res) => {
   }
 });
 
-router.delete("/guardian-links/:id", async (req, res) => {
+router.delete("/guardian-links/:id", requirePermission("user.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -591,7 +598,7 @@ router.delete("/guardian-links/:id", async (req, res) => {
   }
 });
 
-router.post("/users", async (req, res) => {
+router.post("/users", requirePermission("user.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -637,7 +644,7 @@ router.post("/users", async (req, res) => {
   }
 });
 
-router.put("/users/:id", async (req, res) => {
+router.put("/users/:id", requirePermission("user.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -693,7 +700,7 @@ router.put("/users/:id", async (req, res) => {
   }
 });
 
-router.delete("/users/:id", async (req, res) => {
+router.delete("/users/:id", requirePermission("user.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const scope = await resolveManageScope(req);
@@ -715,7 +722,7 @@ router.delete("/users/:id", async (req, res) => {
   }
 });
 
-router.get("/settings", async (req, res) => {
+router.get("/settings", requirePermission("settings.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   try {
@@ -728,7 +735,7 @@ router.get("/settings", async (req, res) => {
   }
 });
 
-router.put("/settings/:key", async (req, res) => {
+router.put("/settings/:key", requirePermission("settings.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const key = String(req.params.key || "").trim();
@@ -749,7 +756,7 @@ router.put("/settings/:key", async (req, res) => {
   }
 });
 
-router.get("/permissions", async (req, res) => {
+router.get("/permissions", requirePermission("permission.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   try {
@@ -762,7 +769,7 @@ router.get("/permissions", async (req, res) => {
   }
 });
 
-router.put("/permissions", async (req, res) => {
+router.put("/permissions", requirePermission("permission.manage"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   const { roleName, permissions } = req.body;
@@ -779,6 +786,7 @@ router.put("/permissions", async (req, res) => {
         [roleName, item.permissionKey, item.permissionValue === false ? 0 : 1]
       );
     }
+    clearPermissionCache(roleName);
     await recordAudit(req, "update", "permission", null, { roleName, permissions });
     return res.json({ message: "Permissions updated" });
   } catch (error) {
@@ -786,7 +794,7 @@ router.put("/permissions", async (req, res) => {
   }
 });
 
-router.get("/logs", async (req, res) => {
+router.get("/logs", requirePermission("log.view"), async (req, res) => {
   if (!canManage(req)) return res.status(403).json({ message: "Permission denied" });
 
   try {
