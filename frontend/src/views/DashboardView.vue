@@ -541,7 +541,7 @@ onMounted(async () => {
           {{ creating ? "创建中..." : "创建课程" }}
         </button>
       </form>
-      <p class="hint">OpenMeetings 课堂链接会根据系统配置自动生成。</p>
+      <p class="hint">若系统已配置 OpenMeetings，将自动生成课堂链接；未配置时也可先创建课程，后续再补链接或添加直播间。</p>
       <p v-if="createError" class="error">{{ createError }}</p>
     </section>
 

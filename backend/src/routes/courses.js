@@ -240,11 +240,6 @@ router.post("/", requireAuth, async (req, res) => {
   }
 
   const hasOpenMeetingsBaseUrl = Boolean(process.env.OPENMEETINGS_ROOM_BASE_URL);
-  if (!meetingUrl && !hasOpenMeetingsBaseUrl) {
-    return res.status(500).json({
-      message: "OPENMEETINGS_ROOM_BASE_URL is not configured"
-    });
-  }
 
   const requestedOrganizationId = req.body.organizationId ? Number(req.body.organizationId) : null;
   const requestedDistrictId = req.body.districtId ? Number(req.body.districtId) : null;
