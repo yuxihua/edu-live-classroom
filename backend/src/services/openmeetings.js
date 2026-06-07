@@ -67,10 +67,24 @@ const openMeetingsRequest = async (config, path, options = {}) => {
   });
 
   const formData = options.formData || null;
-  const body = formData ? new URLSearchParams(Object.entries(formData).map(([key, value]) => [key, String(value ?? "")])) : undefined;
+  const jsonData = options.jsonData ?? null;
+  let body;
+  let headers = {};
+  if (formData) {
+    body = new URLSearchParams(Object.entries(formData).map(([key, value]) => [key, String(value ?? "")]));
+    headers["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8";
+  } else if (jsonData !== null) {
+    body = JSON.stringify(jsonData);
+    headers["Content-Type"] = "application/json;charset=UTF-8";
+  }
+
+  if (options.headers && typeof options.headers === "object") {
+    headers = { ...headers, ...options.headers };
+  }
+
   const response = await fetch(url, {
     method: options.method || (body ? "POST" : "GET"),
-    headers: body ? { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" } : undefined,
+    headers: Object.keys(headers).length > 0 ? headers : undefined,
     body
   });
 
@@ -170,30 +184,89 @@ export const createOpenMeetingsRoom = async ({
   ];
 
   let payload = null;
-  let lastError = null;
-  for (const roomPayload of roomPayloadCandidates) {
-    try {
-      payload = await openMeetingsRequest(config, "/room", {
+  const attemptErrors = [];
+  const resolveRoomId = (roomPayload) => {
+    const serviceMessage = Number(resolveServiceResultMessage(roomPayload));
+    return Number(roomPayload?.id || roomPayload?.roomId || roomPayload?.room?.id || serviceMessage || 0);
+  };
+
+  const requestAttempts = [];
+  roomPayloadCandidates.forEach((roomPayload) => {
+    requestAttempts.push({
+      label: "POST /room form(room) + sid(query)",
+      run: () => openMeetingsRequest(config, "/room", {
         method: "POST",
         searchParams: { sid },
+        formData: { room: JSON.stringify(roomPayload) }
+      })
+    });
+    requestAttempts.push({
+      label: "POST /room/add form(room) + sid(query)",
+      run: () => openMeetingsRequest(config, "/room/add", {
+        method: "POST",
+        searchParams: { sid },
+        formData: { room: JSON.stringify(roomPayload) }
+      })
+    });
+    requestAttempts.push({
+      label: "POST /room/add form(room,sid)",
+      run: () => openMeetingsRequest(config, "/room/add", {
+        method: "POST",
         formData: {
+          sid,
           room: JSON.stringify(roomPayload)
         }
-      });
-      break;
-    } catch (error) {
-      lastError = error;
-      if (Number(error?.status || 0) !== 400) {
-        throw error;
+      })
+    });
+    requestAttempts.push({
+      label: "POST /room json(room) + sid(query)",
+      run: () => openMeetingsRequest(config, "/room", {
+        method: "POST",
+        searchParams: { sid },
+        jsonData: roomPayload
+      })
+    });
+    requestAttempts.push({
+      label: "POST /room/add json(room) + sid(query)",
+      run: () => openMeetingsRequest(config, "/room/add", {
+        method: "POST",
+        searchParams: { sid },
+        jsonData: roomPayload
+      })
+    });
+    requestAttempts.push({
+      label: "POST /room/add json({sid,room})",
+      run: () => openMeetingsRequest(config, "/room/add", {
+        method: "POST",
+        jsonData: {
+          sid,
+          room: roomPayload
+        }
+      })
+    });
+  });
+
+  for (const attempt of requestAttempts) {
+    try {
+      const result = await attempt.run();
+      const roomId = resolveRoomId(result);
+      if (roomId) {
+        payload = result;
+        break;
       }
+      attemptErrors.push(`${attempt.label} => empty room id`);
+    } catch (error) {
+      const detail = String(error?.message || "unknown error").trim();
+      attemptErrors.push(`${attempt.label} => ${detail}`);
     }
   }
 
   if (!payload) {
-    throw lastError || new Error("Failed to create OpenMeetings room");
+    const summary = attemptErrors.slice(0, 4).join(" | ");
+    throw new Error(`Failed to create OpenMeetings room (${summary || "no details"})`);
   }
 
-  const roomId = Number(payload.id || payload.roomId || payload?.room?.id || 0);
+  const roomId = resolveRoomId(payload);
   if (!roomId) {
     throw new Error("Failed to create OpenMeetings room");
   }
